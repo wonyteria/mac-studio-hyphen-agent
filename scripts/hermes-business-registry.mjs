@@ -381,6 +381,103 @@ export async function loadBusinessRegistry(filePath, { maxBytes = DEFAULT_MAX_RE
   return { path: resolved, registry };
 }
 
+// --- Registry sync-status contract -----------------------------------------
+// Written atomically by scripts/hermes-registry-sync.mjs next to the synced
+// destination copy; read by mini-server.mjs for the freshness indicator. The
+// document is a strict allowlist — it carries sync outcomes only, never
+// business content, paths, hashes, or loader error text.
+export const SYNC_STATUS_FILENAME = "registry-sync-status.json";
+export const SYNC_STATUS_MAX_BYTES = 64 * 1024;
+export const SYNC_STATUSES = new Set(["synced", "unchanged", "error"]);
+export const SYNC_STATUS_FIELDS = new Set([
+  "status",
+  "checkedAt",
+  "syncedAt",
+  "registryUpdatedAt",
+  "projectCount",
+  "errorCode",
+]);
+// Bounded error vocabulary for status.errorCode: loader rejection codes plus
+// destination/write failures. Values only — messages never enter the document.
+export const SYNC_ERROR_CODES = new Set([
+  "registry_path_missing",
+  "registry_unreadable",
+  "registry_symlink",
+  "registry_not_regular",
+  "registry_too_large",
+  "registry_parse_error",
+  "schema_mismatch",
+  "source_hash_mismatch",
+  "destination_symlink",
+  "destination_not_regular",
+  "destination_dir_unusable",
+  "write_failed",
+  "sync_error",
+]);
+
+// Maps any thrown error to a bounded status errorCode. Unknown errors collapse
+// to "sync_error"; messages and paths are dropped here.
+export function syncErrorCode(error) {
+  const code = typeof error?.code === "string" ? error.code : "sync_error";
+  return SYNC_ERROR_CODES.has(code) ? code : "sync_error";
+}
+
+// Builds the allowlisted status document. Every field is always present so a
+// reader can validate a fixed shape; nullable fields carry null, never "".
+export function buildSyncStatus({ status, checkedAt, syncedAt = null, registryUpdatedAt = null, projectCount = null, errorCode = null }) {
+  return { status, checkedAt, syncedAt, registryUpdatedAt, projectCount, errorCode };
+}
+
+function isIsoDateOrDatetime(value) {
+  return ISO_DATE.test(String(value)) || ISO_DATETIME.test(String(value));
+}
+
+// Strict reader-side validation of a status file's text. Returns the document
+// or null on any deviation: malformed JSON, non-object, missing/extra keys,
+// bad enums, or mistyped fields — the file is untrusted input too.
+export function parseSyncStatusDocument(raw, { maxBytes = SYNC_STATUS_MAX_BYTES } = {}) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw, "utf8") > maxBytes) return null;
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(doc)) return null;
+  const keys = Object.keys(doc);
+  if (keys.length !== SYNC_STATUS_FIELDS.size || !keys.every((key) => SYNC_STATUS_FIELDS.has(key))) {
+    return null;
+  }
+  if (!SYNC_STATUSES.has(doc.status)) return null;
+  if (!ISO_DATETIME.test(String(doc.checkedAt))) return null;
+  if (doc.syncedAt !== null && !isIsoDateOrDatetime(doc.syncedAt)) return null;
+  if (doc.registryUpdatedAt !== null && !isIsoDateOrDatetime(doc.registryUpdatedAt)) return null;
+  if (doc.projectCount !== null && (!Number.isInteger(doc.projectCount) || doc.projectCount < 0)) {
+    return null;
+  }
+  if (doc.errorCode !== null && !SYNC_ERROR_CODES.has(doc.errorCode)) return null;
+  return doc;
+}
+
+// Freshness classification for the owner-facing indicator. `registry` is the
+// already-validated registry object or null when it cannot be loaded; `status`
+// is the parsed status document or null. Deterministic given `now`.
+//   unavailable — no usable registry at the destination at all.
+//   stale       — registry loads, but there is no trustworthy sync witness:
+//                 no/invalid status file, last run errored, the tool stopped
+//                 checking in (checkedAt older than staleMs), or the status
+//                 no longer describes the destination's content.
+//   fresh       — registry loads and a recent successful run confirms it.
+export function businessRegistryFreshness({ registry = null, status = null, now = Date.now(), staleMs = 10 * 60 * 1000 } = {}) {
+  if (!registry) return "unavailable";
+  if (!status) return "stale";
+  if (status.status === "error") return "stale";
+  const checkedAt = Date.parse(status.checkedAt);
+  if (!Number.isFinite(checkedAt) || now - checkedAt > staleMs) return "stale";
+  if (status.registryUpdatedAt && status.registryUpdatedAt !== registry.updatedAt) return "stale";
+  return "fresh";
+}
+
 function projectEvidence(project) {
   return project.evidence.map((entry) => ({
     label: entry.label,

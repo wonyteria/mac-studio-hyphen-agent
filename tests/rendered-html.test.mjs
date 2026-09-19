@@ -102,6 +102,19 @@ test("renders the production Hyphen Studio Agent shell", async () => {
   assert.match(html, /progress-copy/);
 });
 
+test("renders the business-data freshness pill wired to the status API", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  assert.match(html, /id="biz" class="pill" hidden/);
+  assert.match(html, /\/api\/business\/status/);
+  assert.match(html, /사업 데이터 최신/);
+  assert.match(html, /사업 데이터 지연/);
+  assert.match(html, /사업 데이터 사용 불가/);
+  // The pill is display-only: it must not submit, approve, or queue anything.
+  const renderer = html.match(/function renderBusinessStatus\(data\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(renderer, "renderBusinessStatus missing");
+  assert.equal(/api\(/.test(renderer[0]), false, "status pill must not call mutating APIs");
+});
+
 test("shows truthful connection state driven by API results", async () => {
   const html = await (await fetch(baseUrl)).text();
   assert.match(html, /id="conn" class="pill">연결 확인 중/);

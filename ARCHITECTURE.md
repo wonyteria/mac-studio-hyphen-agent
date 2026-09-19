@@ -27,6 +27,14 @@ Studio cockpit (studio.hyphen.it.com, admin scope)
        -> GET /?project=&type=&prompt=  (bounded prefill params)
        -> server-side validation in scripts/hermes-prefill.mjs
        -> editable composer draft after login -> manual submit -> normal lifecycle
+
+Studio business registry (outputs/registry.private.json)
+  -> scripts/hermes-registry-sync.mjs (host, LaunchAgent com.hyphen.hermes-registry-sync, 5 min)
+       -> validate (symlink/size/schema/sourceHash fail-closed)
+       -> temp + fsync + atomic rename into Hermes persistent data (0600)
+       -> registry-sync-status.json (allowlisted outcome, sibling file)
+  -> mini-server.mjs GET /api/business/status (admin session)
+       -> freshness pill: 사업 데이터 최신 / 지연 / 사용 불가
 ```
 
 ```text
@@ -73,6 +81,7 @@ Production deployment lease extension was verified on 2026-08-16.
 - The registry mirrors mini deploy projects for read-only status, but grants mutation capabilities only to entries with an exact local repository and deterministic verification commands.
 - Tool-free Hermes chat calls Ollama directly and cannot execute commands. Approval-required `hermes_ops` uses Hermes only to select a fixed operation enum; arbitrary model-generated shell commands are never executed.
 - The public project API returns only project ID, name, and domain.
+- The business registry reaches the runtime only through `hermes-registry-sync.mjs` (explicit `--source`/`--destination`, never inferred from the deployment registry) or a manual pinned copy. Every sync run re-validates schema before writing and replaces the destination atomically, so the last-known-good file survives failures. The sync status JSON and `GET /api/business/status` carry only allowlisted freshness fields — `state`, timestamps, `projectCount`, bounded `errorCode` — never business content, local paths, hashes, or error text, and the freshness read never touches the request queue, approvals, or the worker.
 - The worker token authenticates the machine; the claim token binds progress and results to one request execution.
 - Codex can write only inside an isolated worktree of the registered repository and cannot see the operator checkout's untracked secret files or Hermes/mini deploy credentials.
 - `.env`, `.dev.vars`, authentication files, private keys, and credential-like files are blocked from automated commits.

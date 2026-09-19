@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { parseHandoffPrefill, serializePrefillForHtml } from "./scripts/hermes-prefill.mjs";
 
 const port = Number(process.env.PORT || 3000);
@@ -15,6 +15,16 @@ const projectsFile = process.env.HERMES_PROJECTS_FILE || "/app/hermes-projects.j
 // client-supplied path.
 const businessRegistryFile = process.env.HERMES_BUSINESS_REGISTRY || "/app/var/business/registry.private.json";
 const businessRegistryExpectedHash = process.env.HERMES_BUSINESS_REGISTRY_EXPECTED_HASH || "";
+// Sync-status contract: hermes-registry-sync.mjs writes an allowlisted status
+// document next to the destination it manages. The server reads both files
+// fail-closed and serves only bounded freshness state — never paths, hashes,
+// or registry content.
+const businessRegistryStatusFile =
+  process.env.HERMES_BUSINESS_REGISTRY_STATUS ||
+  join(dirname(businessRegistryFile), "registry-sync-status.json");
+const configuredStaleMs = Number(process.env.HERMES_BUSINESS_REGISTRY_STALE_MS);
+const businessRegistryStaleMs =
+  Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : 10 * 60 * 1000;
 const system1ShadowEnabled = process.env.HERMES_SYSTEM1_SHADOW === "1";
 const sessionCookie = "hermes_session";
 const requestTypes = new Set([
@@ -339,6 +349,8 @@ const html = `<!doctype html>
     .chat-side { align-items: center; display: flex; gap: 10px; }
     .evidence { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .pill.offline { border-color: #f0c4bc; color: var(--danger); }
+    .pill.biz-stale { border-color: #ecd2a8; color: var(--warning); }
+    .pill.biz-down { border-color: #f0c4bc; color: var(--danger); }
     .s1 { border-bottom: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
     .s1-head { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
     .s1-title { font-size: 12px; font-weight: 650; }
@@ -391,7 +403,7 @@ const html = `<!doctype html>
     <section class="chat">
       <header class="chat-top">
         <div class="chat-title"><strong>Hyphen Studio Agent</strong><span id="conn" class="pill">연결 확인 중</span></div>
-        <div class="chat-side"><span id="evidence" class="evidence" hidden></span><button id="refreshTop" class="pill">새로고침</button></div>
+        <div class="chat-side"><span id="biz" class="pill" hidden></span><span id="evidence" class="evidence" hidden></span><button id="refreshTop" class="pill">새로고침</button></div>
       </header>
       <div id="messages" class="messages"></div>
       <form id="requestForm" class="composer-wrap">
@@ -466,6 +478,22 @@ const html = `<!doctype html>
       el.textContent = connected ? "연결됨" : "연결 끊김 · 재시도 중";
       el.classList.toggle("offline", !connected);
     }
+    function renderBusinessStatus(data) {
+      const el = $("biz");
+      if (!data || !data.state) { el.hidden = true; return; }
+      const basis = data.registryUpdatedAt ? " · 기준 " + data.registryUpdatedAt : "";
+      if (data.state === "fresh") {
+        el.textContent = "사업 데이터 최신" + basis;
+        el.className = "pill";
+      } else if (data.state === "stale") {
+        el.textContent = "사업 데이터 지연" + basis;
+        el.className = "pill biz-stale";
+      } else {
+        el.textContent = "사업 데이터 사용 불가";
+        el.className = "pill biz-down";
+      }
+      el.hidden = false;
+    }
     function renderEvidence(summary) {
       const el = $("evidence");
       const observed = summary ? summary.observedOk + summary.observedError : 0;
@@ -491,6 +519,7 @@ const html = `<!doctype html>
         applyHandoffPrefill();
         render(requests);
         api("/api/system1/summary").then(renderEvidence).catch(() => renderEvidence(null));
+        api("/api/business/status").then(renderBusinessStatus).catch(() => { $("biz").hidden = true; });
         clearTimeout(pollTimer);
         const busy = requests.some((request) => ["queued", "running"].includes(request.status));
         pollTimer = setTimeout(load, busy ? 2000 : 8000);
@@ -833,6 +862,55 @@ function studioErrorCode(error) {
   return studioErrorCodes.has(code) ? code : "registry_error";
 }
 
+// Reads the sync-status document written by hermes-registry-sync.mjs. Same
+// fail-closed posture as the registry itself: symlinked, oversized, or
+// malformed status files are treated as absent — the endpoint then reports
+// staleness rather than trusting a suspicious file.
+async function readBusinessSyncStatus(registryLib) {
+  try {
+    const info = await lstat(businessRegistryStatusFile);
+    if (info.isSymbolicLink() || !info.isFile() || info.size > registryLib.SYNC_STATUS_MAX_BYTES) {
+      return null;
+    }
+    return registryLib.parseSyncStatusDocument(await readFile(businessRegistryStatusFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// Authenticated read-only freshness answer for the UI pill. The payload is a
+// fixed allowlist — state, timestamps, project count, and a bounded errorCode.
+// Registry contents, local paths, source hashes, and loader messages can never
+// reach this response, and nothing here touches the request queue, approvals,
+// or the worker.
+async function businessRegistryStatus() {
+  const empty = { state: "unavailable", checkedAt: null, syncedAt: null, registryUpdatedAt: null, projectCount: null, errorCode: null };
+  const registryLib = await loadBusinessRegistryModule();
+  if (!registryLib) return empty;
+  let registry = null;
+  try {
+    ({ registry } = await registryLib.loadBusinessRegistry(businessRegistryFile, {
+      expectedHash: businessRegistryExpectedHash || undefined,
+    }));
+  } catch {
+    registry = null;
+  }
+  const status = await readBusinessSyncStatus(registryLib);
+  return {
+    state: registryLib.businessRegistryFreshness({
+      registry,
+      status,
+      now: Date.now(),
+      staleMs: businessRegistryStaleMs,
+    }),
+    checkedAt: status?.checkedAt ?? null,
+    syncedAt: status?.syncedAt ?? null,
+    registryUpdatedAt: registry?.updatedAt ?? status?.registryUpdatedAt ?? null,
+    projectCount: Array.isArray(registry?.projects) ? registry.projects.length : (status?.projectCount ?? null),
+    errorCode: status?.status === "error" ? status.errorCode : null,
+  };
+}
+
 const studioOverviewMaxItems = 5;
 const studioOverviewSectionMaxChars = 620;
 const studioViewBodyMaxChars = 3400;
@@ -1087,6 +1165,10 @@ createServer(async (req, res) => {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
       const store = await readStore();
       return send(res, 200, summarizeSystem1Shadow(store.requests));
+    }
+    if (url.pathname === "/api/business/status" && req.method === "GET") {
+      if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
+      return send(res, 200, await businessRegistryStatus());
     }
     if (url.pathname === "/api/requests" && req.method === "POST") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
