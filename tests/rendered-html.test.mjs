@@ -281,7 +281,7 @@ test("persistent Home entry renders greeting, live state, and grouped actions", 
   assert.match(html, /id="homeBtn" class="new-chat"[^>]*>홈 · 빠른 작업/);
   assert.match(html, /id="drawerHome" class="drawer-action"[^>]*>홈 · 빠른 작업/);
   assert.match(html, /\$\("homeBtn"\)\.onclick = goHome/);
-  assert.match(html, /function goHome\(\) \{ current = null; composingNew = false/);
+  assert.match(html, /function goHome\(\) \{ current = null; composingNew = true/);
   // Grouped launcher: business / operations / development categories.
   const home = html.match(/function homeHtml\(\) \{[\s\S]*?\n {4}\}/);
   assert.ok(home, "homeHtml missing");
@@ -300,6 +300,23 @@ test("persistent Home entry renders greeting, live state, and grouped actions", 
   // Scope copy distinguishes studio-wide vs selected-project actions.
   assert.match(html, /전체 Hyphen Studio 기준으로 읽기만 합니다/);
   assert.match(html, /선택한 프로젝트에 적용됩니다/);
+});
+
+test("home stays selected until an explicit request selection — no auto reselect", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Regression: goHome must suppress the newest-request auto-select, else the
+  // drawer/sidebar home button snaps back to the latest request.
+  assert.match(html, /function goHome\(\) \{ current = null; composingNew = true; void load\(\); \}/);
+  // Initial load still auto-selects the newest request only when the user has
+  // expressed no intent (composingNew false).
+  assert.match(html, /if \(!current && !composingNew && sorted\[0\]\) current = sorted\[0\]\.id;/);
+  // Selecting a thread — sidebar or drawer — clears the home flag.
+  assert.match(html, /\$\("threads"\)\.onclick = async \(event\)[^\n]*composingNew = false/);
+  assert.match(html, /\$\("drawerThreads"\)\.onclick = async \(event\)[^\n]*composingNew = false/);
+  // The drawer home entry closes the drawer before going home.
+  assert.match(html, /\$\("drawerHome"\)\.onclick = \(\) => \{ closeDrawer\(false\); goHome\(\); \}/);
+  // Creating a request leaves the home surface for the new request.
+  assert.match(html, /current = created\.request\.id; composingNew = false;/);
 });
 
 test("composer stacks fields on narrow screens and shows plain-Korean scope", async () => {
