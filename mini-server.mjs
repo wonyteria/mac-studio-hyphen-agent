@@ -4,11 +4,32 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { parseHandoffPrefill, serializePrefillForHtml } from "./scripts/hermes-prefill.mjs";
 import { normalizeExecutor } from "./scripts/hermes-agent-providers.mjs";
+import {
+  COMMAND_ID_MAX,
+  COMMAND_TEXT_MAX,
+  DISCORD_INTERACTION_COMMAND,
+  DISCORD_INTERACTION_PING,
+  DISCORD_RESPONSE_PONG,
+  RATE_LIMIT_GLOBAL,
+  RATE_LIMIT_USER,
+  commandOptions,
+  createRateLimiter,
+  createReplayCache,
+  discordAllowed,
+  discordConfig,
+  discordReadiness,
+  redactSecrets,
+  reply as discordReply,
+  verifyDiscordSignature,
+} from "./scripts/hermes-discord-lib.mjs";
+import { executorStatus as backupExecutorStatus } from "./scripts/hermes-backup-executor.mjs";
+import { expandHome as backupExpandHome } from "./scripts/hermes-backup-manifest.mjs";
 
 const port = Number(process.env.PORT || 3000);
 const adminPassword = process.env.ADMIN_PASSWORD || "";
 const sessionSecret = process.env.SESSION_SECRET || "";
 const workerToken = process.env.WORKER_TOKEN || "";
+const botToken = process.env.HERMES_BOT_TOKEN || "";
 const dataFile = process.env.HERMES_DATA_FILE || "/app/var/data/requests.json";
 const projectsFile = process.env.HERMES_PROJECTS_FILE || "/app/hermes-projects.json";
 // Server-configured only: the Studio business registry is mounted read-only
@@ -490,6 +511,10 @@ const html = `<!doctype html>
     .s1-badge { border: 1px solid var(--line); border-radius: 999px; font-size: 11px; padding: 2px 8px; white-space: nowrap; }
     .s1-row { color: var(--muted); display: flex; font-size: 12px; gap: 12px; justify-content: space-between; }
     .s1-row strong { color: var(--text); font-weight: 600; }
+    .s1-row strong.rs-ok { color: var(--accent); }
+    .s1-row strong.rs-warn { color: var(--warning); }
+    .s1-row strong.rs-down { color: var(--danger); }
+    .readiness { border: 1px solid var(--line); border-radius: 12px; margin-top: 22px; }
     .drawer-scrim { background: rgb(28 25 20 / 42%); inset: 0; position: fixed; z-index: 40; }
     .drawer {
       background: var(--sidebar);
@@ -677,6 +702,7 @@ const html = `<!doctype html>
     let projectCapabilities = {};
     let projectReasons = {};
     let integrations = null;
+    let lastRequests = [];
     let prefillApplied = false;
     let connState = null;
     let bizState = null;
@@ -729,6 +755,7 @@ const html = `<!doctype html>
     async function load() {
       try {
         const [{ requests }, { projects }] = await Promise.all([api("/api/requests"), api("/api/projects")]);
+        lastRequests = requests;
         $("login").hidden = true; $("app").hidden = false;
         document.body.classList.add("authed");
         setConn(true);
@@ -743,7 +770,7 @@ const html = `<!doctype html>
         render(requests);
         api("/api/system1/summary").then(renderEvidence).catch(() => renderEvidence(null));
         api("/api/business/status").then(renderBusinessStatus).catch(() => { $("biz").hidden = true; });
-        api("/api/integrations/status").then((status) => { integrations = status; refreshExecutorLabels(); }).catch(() => { integrations = null; });
+        api("/api/integrations/status").then((status) => { integrations = status; refreshExecutorLabels(); if (!current) render(lastRequests); }).catch(() => { integrations = null; });
         clearTimeout(pollTimer);
         const busy = requests.some((request) => ["queued", "running"].includes(request.status));
         pollTimer = setTimeout(load, busy ? 2000 : 8000);
@@ -794,6 +821,32 @@ const html = `<!doctype html>
       }
       return chips.length ? '<div class="home-state">' + chips.join("") + '</div>' : "";
     }
+    // Readiness fold — truthful admin diagnostics. "unavailable" is shown as
+    // 사용 불가, never dressed up as healthy; every state comes from the
+    // server's /api/integrations/status contract.
+    const readinessStateLabels = { ok: "정상", ready: "준비됨", configured: "설정됨", fresh: "최신", stale: "지연됨", degraded: "주의", unknown: "미확인", unavailable: "사용 불가" };
+    const readinessReasonLabels = { ...capabilityReasonLabels, missing_public_key: "공개 키 미설정", missing_guild_allowlist: "서버 허용 목록 미설정", missing_channel_allowlist: "채널 허용 목록 미설정", missing_user_allowlist: "사용자 허용 목록 미설정", destination_missing: "백업 대상 미설정", missing_credential: "API 키 미설정", invalid_key_prefix: "API 키 형식 오류", missing_org_id: "조직 ID 미설정", invalid_api_url: "API 주소 형식 오류", binary_not_executable: "CLI 미설치", cli_probe_failed: "CLI 확인 실패", last_run_failed: "최근 실행 실패", no_snapshots: "스냅샷 없음" };
+    function readinessRow(label, state, note) {
+      const cls = ["ok", "ready", "configured", "fresh"].includes(state) ? "rs-ok" : ["unavailable", "degraded"].includes(state) ? "rs-down" : state === "stale" ? "rs-warn" : "";
+      return '<div class="s1-row"><span>' + esc(label) + '</span><strong' + (cls ? ' class="' + cls + '"' : "") + '>' + esc(readinessStateLabels[state] || "미확인") + (note ? " · " + esc(note) : "") + "</strong></div>";
+    }
+    function readinessHtml() {
+      if (!integrations) return "";
+      const executors = integrations.executors || {};
+      const coverage = integrations.projects || {};
+      const coverageNote = Number.isFinite(coverage.total)
+        ? "전체 연결 " + coverage.full + "/" + coverage.total + (coverage.statusOnly ? " · 상태 조회만 " + coverage.statusOnly + "개" : "")
+        : null;
+      return '<details class="fold s1 readiness"><summary class="s1-head"><span class="s1-title">연결 상태</span><span class="s1-badge">읽기 전용 진단</span></summary><div class="s1-body">' +
+        readinessRow("Mac Studio 워커", integrations.worker && integrations.worker.state) +
+        readinessRow("Codex 실행자", executors.codex && executors.codex.state, readinessReasonLabels[executors.codex && executors.codex.reason]) +
+        readinessRow("Devin 실행자", executors.devin && executors.devin.state, readinessReasonLabels[executors.devin && executors.devin.reason]) +
+        readinessRow("Discord", integrations.discord && integrations.discord.state, readinessReasonLabels[integrations.discord && integrations.discord.reason]) +
+        readinessRow("백업", integrations.backup && integrations.backup.state, readinessReasonLabels[integrations.backup && integrations.backup.reason]) +
+        readinessRow("프로젝트 능력", coverage.total ? "ok" : "unknown", coverageNote) +
+        readinessRow("사업 데이터", integrations.business && integrations.business.state) +
+        "</div></details>";
+    }
     function homeHtml() {
       const groups = presetGroups.map((group) =>
         '<section class="action-group"><h3>' + esc(group.title) + '</h3><p class="group-note">' + esc(group.note) + '</p><div class="preset-grid">' +
@@ -806,6 +859,7 @@ const html = `<!doctype html>
         '<p class="muted">아래에서 자주 쓰는 작업을 고르거나, 자연스럽게 요청을 적어주세요.</p>' +
         homeStateHtml() +
         '<div class="action-groups">' + groups + '</div>' +
+        readinessHtml() +
         '<p class="preset-scope">사업 작업은 전체 Hyphen Studio 기준으로 읽기만 합니다. 운영·개발 작업은 위에서 선택한 프로젝트에 적용됩니다. 빠른 작업은 내용만 채워주고, 실행은 항상 직접 보내야 시작됩니다.</p>' +
         '</div>';
     }
@@ -1027,6 +1081,20 @@ function isWorker(req) {
   return Boolean(workerToken && (req.headers["x-worker-token"] === workerToken || auth === `Bearer ${workerToken}`));
 }
 
+function isBot(req) {
+  const auth = req.headers.authorization || "";
+  return Boolean(botToken && (req.headers["x-bot-token"] === botToken || auth === `Bearer ${botToken}`));
+}
+
+async function readRawBody(req) {
+  let raw = "";
+  for await (const chunk of req) {
+    raw += chunk;
+    if (Buffer.byteLength(raw) > maxBodyBytes) throw new Error("request_body_too_large");
+  }
+  return raw;
+}
+
 async function readBody(req) {
   let raw = "";
   for await (const chunk of req) {
@@ -1087,6 +1155,262 @@ function classify(type) {
   if (type === "auto") return { risk: "pending", status: "queued" };
   const risky = mutationTypes.has(type);
   return { risk: risky ? "approval_required" : "safe", status: risky ? "approval_required" : "queued" };
+}
+
+// --- Discord operations: signature-verified public interactions endpoint ---
+// The endpoint is public by design (Discord calls it) — the Ed25519
+// signature, timestamp freshness, and every configured allowlist are the
+// auth. Everything reuses the same request-type allowlist, capability gates,
+// and approval state machine as the web console. No arbitrary shell exists.
+
+const discordUserRate = createRateLimiter(RATE_LIMIT_USER);
+const discordGlobalRate = createRateLimiter(RATE_LIMIT_GLOBAL);
+const discordReplays = createReplayCache();
+const discordCommandTypes = new Set([
+  "auto",
+  "development",
+  "redeploy",
+  "mac_status",
+  "deployment_status",
+  "project_inspect",
+  "file_cleanup",
+  "hermes_ops",
+  "hermes_chat",
+]);
+
+const discordStatusLabels = {
+  approval_required: "승인 대기",
+  queued: "대기",
+  running: "실행 중",
+  done: "완료",
+  failed: "실패",
+  canceled: "취소됨",
+};
+
+function discordFindProject(projects, query) {
+  const raw = String(query || "").trim();
+  if (!raw) return null;
+  const lowered = raw.toLowerCase();
+  return (
+    projects.find((project) => project.id === raw) ||
+    projects.find((project) => String(project.name || "").toLowerCase() === lowered) ||
+    projects.find((project) => String(project.name || "").toLowerCase().includes(lowered)) ||
+    null
+  );
+}
+
+function discordFindRequest(store, idPrefix) {
+  const prefix = String(idPrefix || "").trim();
+  const candidates = store.requests;
+  if (!prefix) return [...candidates].sort((a, b) => b.created_at - a.created_at)[0] || null;
+  return (
+    candidates
+      .filter((request) => request.id === prefix || String(request.id).startsWith(prefix))
+      .sort((a, b) => b.created_at - a.created_at)[0] || null
+  );
+}
+
+function discordRequestLine(request) {
+  const status = discordStatusLabels[request.status] || request.status;
+  return `[${status}] ${request.title} (${String(request.id).slice(0, 8)})`;
+}
+
+async function createDiscordRequest({ type, project, title, body, executor, interaction }) {
+  const now = Date.now();
+  const request = {
+    id: randomUUID(),
+    type,
+    resolved_type: null,
+    executor: normalizeExecutor(executor),
+    target_project: project.id,
+    title: String(title).slice(0, 140),
+    body: String(body).slice(0, COMMAND_TEXT_MAX),
+    source: "discord",
+    discord: {
+      channelId: String(interaction.channel_id || ""),
+      userId: String(interaction.member?.user?.id || interaction.user?.id || ""),
+    },
+    ...classify(type),
+    result: null,
+    plan: null,
+    worker_log: null,
+    progress: "요청을 접수했습니다.",
+    progress_step: "created",
+    events: [{ at: now, message: "Discord 요청 접수" }],
+    attempts: 0,
+    created_at: now,
+    updated_at: now,
+    claimed_at: null,
+    lease_expires_at: null,
+    completed_at: null,
+    approved_at: null,
+  };
+  if (system1ShadowEnabled) request.system1_shadow = await computeSystem1Shadow(request, project);
+  await mutateStore((store) => store.requests.push(request));
+  return request;
+}
+
+async function handleDiscordCommand(interaction) {
+  const name = String(interaction.data?.name || "");
+  const options = commandOptions(interaction);
+  const projects = await readProjects();
+  const store = await readStore();
+
+  if (name === "상태") {
+    const counts = {};
+    for (const request of store.requests) counts[request.status] = (counts[request.status] || 0) + 1;
+    const recent = [...store.requests]
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, 3)
+      .map(discordRequestLine);
+    const summary = Object.entries(counts)
+      .map(([status, count]) => `${discordStatusLabels[status] || status} ${count}`)
+      .join(" · ");
+    return discordReply(
+      [`Hermes 운영 상태 — ${summary || "요청 없음"}`, ...recent].join("\n"),
+      { ephemeral: false },
+    );
+  }
+
+  if (name === "점검") {
+    const project = discordFindProject(projects, options["프로젝트"]);
+    if (!project) return discordReply("프로젝트를 찾지 못했습니다. 이름이나 id를 확인해주세요.");
+    if (!projectSupports(project, "project_inspect")) {
+      return discordReply(`${project.name}은(는) 저장소 점검이 연결되어 있지 않습니다.`);
+    }
+    const request = await createDiscordRequest({
+      type: "project_inspect",
+      project,
+      title: `점검: ${project.name}`,
+      body: "Discord 점검 요청",
+      interaction,
+    });
+    return discordReply(`점검 요청을 접수했습니다 — ${project.name} (${request.id.slice(0, 8)})`);
+  }
+
+  if (name === "요청") {
+    const body = String(options["내용"] || "").trim();
+    if (!body) return discordReply("요청 내용을 입력해주세요.");
+    const type = discordCommandTypes.has(options["종류"]) ? options["종류"] : "auto";
+    const project =
+      discordFindProject(projects, options["프로젝트"]) ||
+      projects.find((candidate) => candidate.id === defaultProject) ||
+      projects[0];
+    if (!project) return discordReply("등록된 프로젝트가 없습니다.");
+    if (type !== "auto" && !projectSupports(project, type)) {
+      return discordReply(`${project.name}은(는) 이 작업을 지원하지 않습니다.`);
+    }
+    const request = await createDiscordRequest({
+      type,
+      project,
+      title: body.replace(/\s+/g, " ").slice(0, 56),
+      body,
+      executor: options["실행자"],
+      interaction,
+    });
+    if (request.status === "approval_required") {
+      return discordReply(
+        `변경 작업으로 등록했습니다. 실행하려면 승인이 필요합니다 — /승인 ${request.id.slice(0, 8)}`,
+      );
+    }
+    return discordReply(`요청을 접수했습니다 (${request.id.slice(0, 8)})`);
+  }
+
+  if (name === "승인") {
+    const target = discordFindRequest(store, options.id);
+    if (!target) return discordReply("요청을 찾지 못했습니다.");
+    if (target.status !== "approval_required") {
+      return discordReply(`승인 대기 상태가 아닙니다 — ${discordRequestLine(target)}`);
+    }
+    await mutateStore((store2) => {
+      const item = store2.requests.find(
+        (request) => request.id === target.id && request.status === "approval_required",
+      );
+      if (item) {
+        item.status = "queued";
+        item.approved_at = Date.now();
+        item.progress = "Discord에서 승인되었습니다. Mac Studio 워커를 기다리는 중입니다.";
+        item.progress_step = "approved";
+        item.updated_at = Date.now();
+        addEvent(item, "Discord 실행 승인");
+      }
+    });
+    return discordReply(`승인했습니다 — ${discordRequestLine(target)}`);
+  }
+
+  if (name === "취소") {
+    const target = discordFindRequest(store, options.id);
+    if (!target) return discordReply("요청을 찾지 못했습니다.");
+    const canceled = await mutateStore((store2) => {
+      const item = store2.requests.find(
+        (request) =>
+          request.id === target.id && ["queued", "approval_required"].includes(request.status),
+      );
+      if (!item) return false;
+      item.status = "canceled";
+      item.progress = "Discord에서 실행 전에 취소했습니다.";
+      item.progress_step = "canceled";
+      item.completed_at = Date.now();
+      item.updated_at = Date.now();
+      addEvent(item, "Discord 요청 취소");
+      return true;
+    });
+    return discordReply(
+      canceled ? `취소했습니다 — ${discordRequestLine(target)}` : `취소할 수 없는 상태입니다 — ${discordRequestLine(target)}`,
+    );
+  }
+
+  if (name === "결과") {
+    const target = discordFindRequest(store, options.id);
+    if (!target) return discordReply("요청을 찾지 못했습니다.");
+    const result = target.result ? redactSecrets(target.result) : "아직 결과가 없습니다.";
+    return discordReply(`${discordRequestLine(target)}\n${result}`);
+  }
+
+  return discordReply("지원하지 않는 명령입니다.");
+}
+
+async function handleDiscordInteraction(req, res) {
+  const config = discordConfig();
+  if (!config.publicKey) {
+    return send(res, 503, { error: "discord_unavailable" });
+  }
+  const rawBody = await readRawBody(req);
+  const valid = verifyDiscordSignature({
+    publicKeyHex: config.publicKey,
+    signatureHex: req.headers["x-signature-ed25519"],
+    timestamp: req.headers["x-signature-timestamp"],
+    rawBody,
+  });
+  if (!valid) return send(res, 401, { error: "invalid_signature" });
+  let interaction;
+  try {
+    interaction = JSON.parse(rawBody);
+  } catch {
+    return send(res, 400, { error: "invalid_body" });
+  }
+  if (interaction?.type === DISCORD_INTERACTION_PING) {
+    return send(res, 200, { type: DISCORD_RESPONSE_PONG });
+  }
+  if (interaction?.type !== DISCORD_INTERACTION_COMMAND) {
+    return send(res, 200, discordReply("지원하지 않는 상호작용입니다."));
+  }
+  const replayed = discordReplays.check(String(interaction.id));
+  if (replayed) return send(res, 200, replayed);
+  if (!discordAllowed(interaction, config)) {
+    return send(res, 200, discordReply("허용되지 않은 서버, 채널, 또는 사용자입니다."));
+  }
+  const userId = String(interaction.member?.user?.id || interaction.user?.id || "unknown");
+  if (!discordGlobalRate("global") || !discordUserRate(userId)) {
+    return send(res, 200, discordReply("요청이 너무 많습니다. 잠시 후 다시 시도해주세요."));
+  }
+  const idOption = String(interaction.data?.options?.find((o) => o.name === "id")?.value || "");
+  if (idOption.length > COMMAND_ID_MAX) {
+    return send(res, 200, discordReply("id가 너무 깁니다."));
+  }
+  const response = await handleDiscordCommand(interaction);
+  discordReplays.store(String(interaction.id), response);
+  return send(res, 200, response);
 }
 
 const system1ShadowKind = "hermes.system1.shadow";
@@ -1616,6 +1940,35 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/logout" && req.method === "POST") {
       return send(res, 200, { ok: true }, { "Set-Cookie": `${sessionCookie}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` });
     }
+    if (url.pathname === "/api/discord/interactions" && req.method === "POST") {
+      return handleDiscordInteraction(req, res);
+    }
+    if (url.pathname === "/api/bot/notifications" && req.method === "POST") {
+      if (!isBot(req)) return send(res, 401, { error: "unauthorized" });
+      const body = await readBody(req);
+      const since = Number(body.since || 0);
+      const store = await readStore();
+      const notifications = store.requests
+        .filter(
+          (request) =>
+            request.source === "discord" &&
+            ["done", "failed", "canceled"].includes(request.status) &&
+            Number(request.completed_at || 0) > (Number.isFinite(since) ? since : 0),
+        )
+        .sort((a, b) => a.completed_at - b.completed_at)
+        .slice(0, 20)
+        .map((request) => ({
+          id: request.id,
+          type: request.resolved_type || request.type,
+          title: String(request.title || "").slice(0, 140),
+          status: request.status,
+          progress: String(request.progress || "").slice(0, 300),
+          completed_at: request.completed_at,
+          channelId: String(request.discord?.channelId || ""),
+          result: request.result ? redactSecrets(request.result) : null,
+        }));
+      return send(res, 200, { notifications });
+    }
     if (url.pathname === "/api/requests" && req.method === "GET") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
       const store = await readStore();
@@ -1956,6 +2309,13 @@ createServer(async (req, res) => {
       const businessState = await businessRegistryStatus()
         .then((status) => status.state || "unknown")
         .catch(() => "unknown");
+      const discord = discordReadiness();
+      const backupDestination = process.env.HERMES_BACKUP_DESTINATION || "";
+      const backup = backupDestination.trim()
+        ? await backupExecutorStatus({ destination: backupExpandHome(backupDestination.trim()) }).catch(() => ({
+            state: "unknown",
+          }))
+        : { state: "unavailable", reason: "destination_missing" };
       return send(res, 200, {
         kind: "hermes-integrations-status",
         schemaVersion: 1,
@@ -1965,6 +2325,8 @@ createServer(async (req, res) => {
           codex: reported?.codex || { state: "unknown" },
           devin: reported?.devin || { state: "unknown" },
         },
+        discord: { state: discord.state, ...(discord.reason ? { reason: discord.reason } : {}) },
+        backup: { state: backup.state, ...(backup.reason ? { reason: backup.reason } : {}) },
         projects: coverage,
         business: { state: businessState },
       });

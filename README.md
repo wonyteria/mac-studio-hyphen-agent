@@ -211,13 +211,26 @@ An approved development request runs this sequence:
 2. create a request-specific detached Git worktree without local secret files
 3. run the selected executor:
    - **Codex** — `codex exec --sandbox workspace-write --ephemeral --json` inside that worktree
-   - **Devin** — a bounded `POST /v1/sessions` cloud session that pushes `hermes/devin-<requestId>`; the worker applies that branch's diff into the worktree
+   - **Devin** — a bounded v3 service-user session (`POST /v3/organizations/{org}/sessions`) that pushes `hermes/devin-<requestId>`; the worker applies that branch's diff into the worktree
 4. reject protected files and paths outside the registered repository
 5. run every `verifyCommands` entry from the project registry
 6. commit with the Lore decision trailers and push the registered branch (the pipeline authors commits — never the provider)
 7. preserve configured deployment data, request a mini deploy redeploy, restore the data, and check `/health`
 
-Neither executor receives Hermes, mini deploy, password, or token environment variables beyond its own scoped credential (`DEVIN_API_KEY` reaches only the worker's Devin API calls — never the store, logs, results, or git). Successful worktrees are removed after deployment; failed worktrees remain under the Hermes runtime directory for inspection without dirtying the operator's checkout. Executor readiness is reported truthfully (`ready`/`configured`/`unavailable`/`unknown`) via `POST /api/worker/providers` → `GET /api/integrations/status` — see `DEVIN.md`.
+Neither executor receives Hermes, mini deploy, password, or token environment variables beyond its own scoped credential (`DEVIN_API_KEY` reaches only the worker's Devin API calls — never the store, logs, results, or git). Every child process the worker spawns runs on a scrubbed environment — inherited launchd credentials (any `TOKEN`/`SECRET`/`PASSWORD`/`API_KEY`-style variable such as `MINI_VERCEL_GITHUB_TOKEN`) never reach git, provider, or verify subprocesses; only an explicit per-call-site allowlist can re-add one. Successful worktrees are removed after deployment; failed worktrees remain under the Hermes runtime directory for inspection without dirtying the operator's checkout. Executor readiness is reported truthfully (`ready`/`configured`/`unavailable`/`unknown`) via `POST /api/worker/providers` → `GET /api/integrations/status` — see `DEVIN.md`.
+
+## Discord Operations
+
+An optional Korean slash-command interface reuses the same request allowlist, capability gates, and approval state machine — mutations still require explicit approval, and no arbitrary shell exists. The public interactions endpoint verifies Discord's Ed25519 signature over the raw request body (`X-Signature-Ed25519` + `X-Signature-Timestamp`, 5-minute freshness window), answers PING with PONG, enforces guild/channel/user allowlists plus per-user and global rate limits, dedupes interaction ids, and redacts secret-shaped text before anything leaves. Long-running results arrive through the bot Create Message API via a companion poller (`scripts/hermes-discord-ops.mjs`). All credentials are env-only; without configuration the endpoint reports `discord_unavailable` and readiness stays `unavailable`. See `DISCORD.md`.
+
+## Operations Smoke & Readiness
+
+`scripts/hermes-smoke.mjs` runs one consolidated, safe check — health, auth boundary, business registry, queue/worker, provider readiness, Discord readiness, backup readiness, and project capability coverage — in JSON or Korean human output. `--mutation-canary` exercises the create→approval→claim→cancel state machine against a throwaway fixture server (never production); a production run requires `--production --approve <requestId>` as evidence and stays read-only. The admin home view shows the same truth as a collapsible 연결 상태 fold fed by `/api/integrations/status` (worker, Codex, Devin, Discord, backup, capability coverage, business data).
+
+```bash
+node scripts/hermes-smoke.mjs --format json
+node scripts/hermes-smoke.mjs --mutation-canary            # fixture only
+```
 
 ## Safety Model
 
