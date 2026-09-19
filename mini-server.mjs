@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { parseHandoffPrefill, serializePrefillForHtml } from "./scripts/hermes-prefill.mjs";
+import { normalizeExecutor } from "./scripts/hermes-agent-providers.mjs";
 
 const port = Number(process.env.PORT || 3000);
 const adminPassword = process.env.ADMIN_PASSWORD || "";
@@ -595,9 +596,13 @@ const html = `<!doctype html>
                 <option value="deployment_status">배포 상태</option>
                 <option value="project_inspect">프로젝트 점검</option>
                 <option value="redeploy">재배포</option>
-                <option value="development">Codex 개발 요청</option>
+                <option value="development">개발 요청</option>
                 <option value="file_cleanup">파일 정리</option>
                 <option value="hermes_ops">Hermes 운영 요청</option>
+              </select></label>
+              <label class="field" id="executorField" hidden><span>개발 실행자</span><select id="executor">
+                <option value="codex">Codex</option>
+                <option value="devin">Devin</option>
               </select></label>
             </div>
             <button class="send" type="submit" title="보내기" aria-label="보내기">↑</button>
@@ -671,6 +676,7 @@ const html = `<!doctype html>
     let projectNames = {};
     let projectCapabilities = {};
     let projectReasons = {};
+    let integrations = null;
     let prefillApplied = false;
     let connState = null;
     let bizState = null;
@@ -737,6 +743,7 @@ const html = `<!doctype html>
         render(requests);
         api("/api/system1/summary").then(renderEvidence).catch(() => renderEvidence(null));
         api("/api/business/status").then(renderBusinessStatus).catch(() => { $("biz").hidden = true; });
+        api("/api/integrations/status").then((status) => { integrations = status; refreshExecutorLabels(); }).catch(() => { integrations = null; });
         clearTimeout(pollTimer);
         const busy = requests.some((request) => ["queued", "running"].includes(request.status));
         pollTimer = setTimeout(load, busy ? 2000 : 8000);
@@ -851,6 +858,8 @@ const html = `<!doctype html>
           ? "범위: 전체 Hyphen Studio"
           : "프로젝트: " + (projectNames[project] || "선택 없음");
       }
+      const executorField = $("executorField");
+      if (executorField) executorField.hidden = type !== "development";
       if (capabilityGatedTypes.includes(type) && project && !capabilities.includes(type)) {
         const reason = capabilityReasonLabels[projectReasons[project]];
         el.textContent = reason ? reason + " — " + (capabilityGuidance[type] || capabilityGuidanceFallback) : capabilityGuidance[type] || capabilityGuidanceFallback;
@@ -862,6 +871,18 @@ const html = `<!doctype html>
         el.textContent = "";
         delete el.dataset.guide;
       }
+    }
+    // Executor labels report only what the worker actually reported — "미설정"
+    // when unavailable, "미확인" when nothing has been reported yet. Never a
+    // false "연결됨".
+    function refreshExecutorLabels() {
+      const executorEl = $("executor");
+      if (!executorEl) return;
+      const states = (integrations && integrations.executors) || {};
+      const label = (name, state) => name + (state === "unavailable" ? " (미설정)" : state === "unknown" || !state ? " (미확인)" : "");
+      [...executorEl.options].forEach((option) => {
+        option.textContent = label(option.value === "devin" ? "Devin" : "Codex", states[option.value]?.state);
+      });
     }
     function applyPreset(id) {
       const preset = presets.find((item) => item.id === id);
@@ -926,7 +947,7 @@ const html = `<!doctype html>
       $("messages").scrollTop = $("messages").scrollHeight;
     }
     $("loginForm").onsubmit = async (event) => { event.preventDefault(); try { const password = $("password").value; if (!password) { $("loginError").textContent = "비밀번호를 입력해주세요."; return; } await api("/api/login", { method: "POST", body: JSON.stringify({ password }) }); await load(); } catch (e) { $("loginError").textContent = "비밀번호가 맞지 않습니다."; } };
-    $("requestForm").onsubmit = async (event) => { event.preventDefault(); $("formStatus").textContent = ""; delete $("formStatus").dataset.guide; const body = $("body").value.trim(); if (!body) return; try { const created = await api("/api/requests", { method: "POST", body: JSON.stringify({ type: $("type").value, title: titleFrom(body), body, target_project: $("project").value || "hermes-mac-ops" }) }); current = created.request.id; composingNew = false; $("body").value = ""; await load(); } catch (error) { if (error.message === "project_capability_not_enabled") { $("formStatus").textContent = capabilityGuidance[$("type").value] || capabilityGuidanceFallback; $("formStatus").dataset.guide = "1"; } else { $("formStatus").textContent = error.message || "요청을 보내지 못했습니다."; } } };
+    $("requestForm").onsubmit = async (event) => { event.preventDefault(); $("formStatus").textContent = ""; delete $("formStatus").dataset.guide; const body = $("body").value.trim(); if (!body) return; try { const created = await api("/api/requests", { method: "POST", body: JSON.stringify({ type: $("type").value, executor: $("executor").value, title: titleFrom(body), body, target_project: $("project").value || "hermes-mac-ops" }) }); current = created.request.id; composingNew = false; $("body").value = ""; await load(); } catch (error) { if (error.message === "project_capability_not_enabled") { $("formStatus").textContent = capabilityGuidance[$("type").value] || capabilityGuidanceFallback; $("formStatus").dataset.guide = "1"; } else { $("formStatus").textContent = error.message || "요청을 보내지 못했습니다."; } } };
     $("threads").onclick = async (event) => { const id = event.target?.closest?.("[data-thread]")?.dataset?.thread; if (id) { current = id; composingNew = false; await load(); } };
     $("messages").onclick = async (event) => { const presetId = event.target?.closest?.("[data-preset]")?.dataset?.preset; if (presetId) { applyPreset(presetId); return; } const approveId = event.target?.dataset?.approve; const cancelId = event.target?.dataset?.cancel; const retryId = event.target?.dataset?.retry; if (approveId) await api("/api/requests/" + approveId + "/approve", { method: "POST", body: "{}" }); if (cancelId) await api("/api/requests/" + cancelId + "/cancel", { method: "POST", body: "{}" }); if (retryId) await api("/api/requests/" + retryId + "/retry", { method: "POST", body: "{}" }); if (approveId || cancelId || retryId) await load(); };
     function goHome() { current = null; composingNew = true; void load(); }
@@ -1022,10 +1043,12 @@ async function readProjects() {
 
 async function readStore() {
   try {
-    return JSON.parse(await readFile(dataFile, "utf8"));
+    const store = JSON.parse(await readFile(dataFile, "utf8"));
+    if (store && typeof store === "object" && (!store.meta || typeof store.meta !== "object")) store.meta = {};
+    return store;
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
-    return { requests: [] };
+    return { requests: [], meta: {} };
   }
 }
 
@@ -1641,6 +1664,7 @@ createServer(async (req, res) => {
         id: randomUUID(),
         type,
         resolved_type: null,
+        executor: normalizeExecutor(body.executor),
         target_project: targetProject,
         title,
         body: text,
@@ -1751,6 +1775,7 @@ createServer(async (req, res) => {
       if (!isWorker(req)) return send(res, 401, { error: "unauthorized" });
       const item = await mutateStore((store) => {
         const now = Date.now();
+        store.meta.lastWorkerSeenAt = now;
         for (const request of store.requests) {
           const stale =
             request.status === "running" &&
@@ -1798,6 +1823,7 @@ createServer(async (req, res) => {
       if (!resolvedRequestTypes.has(resolvedType)) return send(res, 400, { error: "invalid_resolved_type" });
       const projects = await readProjects();
       const updated = await mutateStore((store) => {
+        store.meta.lastWorkerSeenAt = Date.now();
         const item = store.requests.find(
           (request) =>
             request.id === body.id &&
@@ -1837,6 +1863,7 @@ createServer(async (req, res) => {
       if (!isWorker(req)) return send(res, 401, { error: "unauthorized" });
       const body = await readBody(req);
       const updated = await mutateStore((store) => {
+        store.meta.lastWorkerSeenAt = Date.now();
         const item = store.requests.find(
           (request) => request.id === body.id && request.status === "running" && request.claim_token === body.claimToken,
         );
@@ -1863,6 +1890,7 @@ createServer(async (req, res) => {
       if (!isWorker(req)) return send(res, 401, { error: "unauthorized" });
       const body = await readBody(req);
       const updated = await mutateStore((store) => {
+        store.meta.lastWorkerSeenAt = Date.now();
         const item = store.requests.find(
           (request) =>
             request.id === body.id &&
@@ -1884,6 +1912,62 @@ createServer(async (req, res) => {
         return true;
       });
       return send(res, updated ? 200 : 409, { ok: updated });
+    }
+    if (url.pathname === "/api/worker/providers" && req.method === "POST") {
+      if (!isWorker(req)) return send(res, 401, { error: "unauthorized" });
+      const body = await readBody(req);
+      const allowedStates = new Set(["ready", "configured", "unavailable"]);
+      const providerState = (value) => ({
+        state: allowedStates.has(value?.state) ? value.state : "unavailable",
+      });
+      await mutateStore((store) => {
+        const now = Date.now();
+        store.meta.lastWorkerSeenAt = now;
+        store.meta.workerProviders = {
+          reportedAt: now,
+          codex: providerState(body.codex),
+          devin: providerState(body.devin),
+        };
+      });
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/integrations/status" && req.method === "GET") {
+      if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
+      const store = await readStore();
+      const projects = await readProjects();
+      const coverage = { total: projects.length, full: 0, statusOnly: 0, reasons: {} };
+      for (const project of projects) {
+        const caps = project.capabilities || [];
+        if (caps.includes("project_inspect") || caps.includes("development")) {
+          coverage.full += 1;
+        } else {
+          coverage.statusOnly += 1;
+          const reason = String(project.capabilityReason || "unverified").slice(0, 80);
+          coverage.reasons[reason] = (coverage.reasons[reason] || 0) + 1;
+        }
+      }
+      const reported = store.meta?.workerProviders || null;
+      const lastSeenAt = store.meta?.lastWorkerSeenAt || null;
+      const workerState = lastSeenAt
+        ? Date.now() - lastSeenAt < 5 * 60 * 1000
+          ? "ready"
+          : "stale"
+        : "unknown";
+      const businessState = await businessRegistryStatus()
+        .then((status) => status.state || "unknown")
+        .catch(() => "unknown");
+      return send(res, 200, {
+        kind: "hermes-integrations-status",
+        schemaVersion: 1,
+        worker: { state: workerState, lastSeenAt },
+        executors: {
+          reportedAt: reported?.reportedAt || null,
+          codex: reported?.codex || { state: "unknown" },
+          devin: reported?.devin || { state: "unknown" },
+        },
+        projects: coverage,
+        business: { state: businessState },
+      });
     }
     send(res, 404, { error: "not_found" });
   } catch (error) {

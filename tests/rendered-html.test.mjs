@@ -99,7 +99,10 @@ test("renders the production Hyphen Studio Agent shell", async () => {
   assert.match(html, /<option value="studio_evidence_audit">사업 현황 갱신 점검<\/option>/);
   assert.match(html, /Hermes 4\.3 대화/);
   assert.match(html, /Hermes 운영 요청/);
-  assert.match(html, /Codex 개발 요청/);
+  assert.match(html, /<option value="development">개발 요청<\/option>/);
+  assert.match(html, /id="executorField" hidden/);
+  assert.match(html, /<option value="codex">Codex<\/option>/);
+  assert.match(html, /<option value="devin">Devin<\/option>/);
   assert.match(html, /progress-copy/);
 });
 

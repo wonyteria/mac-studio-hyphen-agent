@@ -34,7 +34,7 @@ The production deployment at `https://hermes.hyphen.it.com` currently runs the c
 - `deployment_status`: inspect mini deploy state and Docker container for a registered project
 - `project_inspect`: summarize Git status, recent commits, and running container
 - `redeploy`: approval-required mini deploy redeploy of the registered project
-- `development`: after approval, run Codex in the registered repository, verify, commit, push, redeploy, and health-check
+- `development`: after approval, run the selected executor (Codex or Devin — composer `개발 실행자` or `executor` on `POST /api/requests`, allowlist-fail-closed to `codex`) against the registered repository, verify, commit, push, redeploy, and health-check. See `DEVIN.md`.
 - `file_cleanup`: approval-required cleanup planning through Hermes MacOps tools
 - `custom`: legacy alias for tool-free `hermes_chat`
 
@@ -209,13 +209,15 @@ An approved development request runs this sequence:
 
 1. acquire a per-project lock and fetch the registered remote branch
 2. create a request-specific detached Git worktree without local secret files
-3. run `codex exec --sandbox workspace-write --ephemeral --json` inside that worktree
+3. run the selected executor:
+   - **Codex** — `codex exec --sandbox workspace-write --ephemeral --json` inside that worktree
+   - **Devin** — a bounded `POST /v1/sessions` cloud session that pushes `hermes/devin-<requestId>`; the worker applies that branch's diff into the worktree
 4. reject protected files and paths outside the registered repository
 5. run every `verifyCommands` entry from the project registry
-6. commit with the Lore decision trailers and push the registered branch
+6. commit with the Lore decision trailers and push the registered branch (the pipeline authors commits — never the provider)
 7. preserve configured deployment data, request a mini deploy redeploy, restore the data, and check `/health`
 
-Codex does not receive Hermes, mini deploy, password, or token environment variables. Successful worktrees are removed after deployment; failed worktrees remain under the Hermes runtime directory for inspection without dirtying the operator's checkout.
+Neither executor receives Hermes, mini deploy, password, or token environment variables beyond its own scoped credential (`DEVIN_API_KEY` reaches only the worker's Devin API calls — never the store, logs, results, or git). Successful worktrees are removed after deployment; failed worktrees remain under the Hermes runtime directory for inspection without dirtying the operator's checkout. Executor readiness is reported truthfully (`ready`/`configured`/`unavailable`/`unknown`) via `POST /api/worker/providers` → `GET /api/integrations/status` — see `DEVIN.md`.
 
 ## Safety Model
 

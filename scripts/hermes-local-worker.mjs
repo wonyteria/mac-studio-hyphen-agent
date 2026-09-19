@@ -664,7 +664,7 @@ async function collectChangedFiles(project, baseline) {
   return files;
 }
 
-function codexPrompt(request, project) {
+function agentPrompt(request, project) {
   const verification =
     (project.verifyCommands || []).map((item) => `- ${item}`).join("\n") ||
     "- 저장소의 기존 검증 명령";
@@ -684,6 +684,170 @@ ${request.body}
 ${verification}
 - 마지막 답변은 변경 파일, 검증 결과, 남은 위험을 한국어로 간결하게 보고한다.
 `;
+}
+
+const codexPrompt = agentPrompt;
+
+// --- Devin provider adapter (official non-interactive API only, no UI scraping) ---
+
+const devinApiUrl = process.env.DEVIN_API_URL || "https://api.devin.ai";
+const devinBranchPrefix = "hermes/devin-";
+
+async function devinApi(path, init = {}) {
+  const key = process.env.DEVIN_API_KEY;
+  if (!key) {
+    throw new Error("Devin 실행자가 설정되지 않았습니다 (DEVIN_API_KEY 미설정).");
+  }
+  const response = await fetch(new URL(path, devinApiUrl), {
+    method: init.method || "GET",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: init.body ? JSON.stringify(init.body) : undefined,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(`Devin API 오류: ${response.status}`);
+  return data;
+}
+
+function devinPrompt(request, project, branch) {
+  return `${agentPrompt(request, project)}
+추가 Devin 실행 계약:
+- 저장소 ${project.github}의 ${project.branch} 브랜치를 기준으로 작업한다.
+- 작업 결과를 ${project.gitRemote} 리모트의 '${branch}' 브랜치로 푸시한다.
+- PR을 열지 않는다. 커밋 메시지와 브랜치 푸시 외의 원격 변경은 하지 않는다.
+- 완료하면 변경 파일 목록과 검증 결과를 한국어로 요약 보고한다.
+`;
+}
+
+export function parseDevinSession(payload) {
+  const statusEnum = String(payload?.status_enum || payload?.status || "").toLowerCase();
+  const structured = payload?.structured_output;
+  return {
+    id: String(payload?.session_id || payload?.id || ""),
+    url: String(payload?.url || ""),
+    status: statusEnum,
+    detail: String(structured?.result || payload?.result_detail || "").slice(0, 4000),
+  };
+}
+
+function devinTerminalStatus(session) {
+  if (["finished", "succeeded", "completed", "done"].includes(session.status)) return "finished";
+  if (["expired", "failed", "error", "suspended", "blocked"].includes(session.status)) return "failed";
+  return "running";
+}
+
+// Creates a Devin session and polls it to a terminal state. Bounded: 45 min
+// deadline, 20 s poll interval, status codes only in errors — never request
+// bodies, prompts, or credential material.
+async function runDevinSession(request, project, devinBranch, reporter) {
+  const created = await devinApi("/v1/sessions", {
+    method: "POST",
+    body: {
+      prompt: devinPrompt(request, project, devinBranch).slice(0, 8000),
+      idempotent: true,
+      idempotency_key: `hermes-${request.id}`,
+    },
+  });
+  const session = parseDevinSession(created);
+  if (!session.id) throw new Error("Devin 세션 ID를 받지 못했습니다.");
+  await reporter.update("devin", `Devin 세션 실행 중: ${session.url || session.id}`);
+  const deadline = Date.now() + 45 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await sleep(20_000);
+    const current = parseDevinSession(await devinApi(`/v1/sessions/${session.id}`));
+    const terminal = devinTerminalStatus(current);
+    if (terminal === "finished") return current;
+    if (terminal === "failed") {
+      throw new Error(`Devin 세션이 완료되지 못했습니다 (상태: ${current.status || "unknown"}).`);
+    }
+    await reporter.extendLease(30 * 60 * 1000);
+  }
+  throw new Error("Devin 세션이 시간 제한(45분)을 초과했습니다.");
+}
+
+// Fetches the branch Devin pushed and applies its diff inside the isolated
+// worktree so the shared collect/verify/commit/push/deploy pipeline runs
+// unchanged — the only difference is where the diff was produced.
+async function applyDevinBranch(project, executionProject, baseline, request, reporter) {
+  const devinBranch = `${devinBranchPrefix}${request.id}`;
+  const localRef = `refs/hermes/devin-${request.id}`;
+  const fetchResult = await runCommand(
+    "git",
+    ["-C", project.repo, "fetch", project.gitRemote, `${devinBranch}:${localRef}`],
+    { timeoutMs: 3 * 60 * 1000 },
+  );
+  if (fetchResult.code !== 0) {
+    throw new Error("Devin이 약속된 작업 브랜치를 리모트에 푸시하지 않았습니다.");
+  }
+  const diff = await git(project, ["diff", "--binary", `${baseline}..${localRef}`]);
+  if (!diff.stdout.trim()) return { changed: false };
+  const patchPath = join(worktreeRoot, `devin-${request.id}.patch`);
+  await writeFile(patchPath, diff.stdout, "utf8");
+  try {
+    const apply = await runCommand("git", ["-C", executionProject.repo, "apply", "--whitespace=nowarn", patchPath], {
+      timeoutMs: 60_000,
+    });
+    if (apply.code !== 0) {
+      throw new Error(`Devin 변경을 worktree에 적용하지 못했습니다: ${trimOutput(apply.stderr || apply.stdout)}`);
+    }
+  } finally {
+    await rm(patchPath, { force: true });
+  }
+  reporter.appendLog(`Devin 브랜치 적용: ${devinBranch}`);
+  return { changed: true };
+}
+
+async function runDevinAgent(request, project, executionProject, baseline, reporter) {
+  const devinBranch = `${devinBranchPrefix}${request.id}`;
+  const session = await runDevinSession(request, project, devinBranch, reporter);
+  const applied = await applyDevinBranch(project, executionProject, baseline, request, reporter);
+  return { finalMessage: session.detail || "", hasChanges: applied.changed };
+}
+
+async function runCodexAgent(request, project, executionProject, reporter) {
+  await reporter.update("codex", "Codex가 비밀 파일이 없는 격리 worktree에서 요청을 처리하고 있습니다.");
+  const codexResult = await runCommand(
+    "codex",
+    [
+      "exec",
+      "--sandbox",
+      "workspace-write",
+      "--ephemeral",
+      "--json",
+      "-C",
+      executionProject.repo,
+      codexPrompt(request, project),
+    ],
+    {
+      cwd: executionProject.repo,
+      env: childEnvironment(true),
+      onStderr: (value) => reporter.appendLog(value),
+      timeoutMs: 45 * 60 * 1000,
+    },
+  );
+  const codex = parseCodexOutput(codexResult.stdout);
+  if (codexResult.code !== 0) {
+    throw new Error(`Codex 실행 실패: ${trimOutput(codexResult.stderr || codex.finalMessage, 8000)}`);
+  }
+  return { finalMessage: codex.finalMessage || "", hasChanges: null };
+}
+
+// Readiness report for the console integrations view — states only, never
+// credential values. Posted once per worker start; bounded and best-effort.
+export async function reportProviderReadiness() {
+  try {
+    const probe = await runCommand("codex", ["--version"], { timeoutMs: 5000 });
+    await api("/api/worker/providers", {
+      method: "POST",
+      body: JSON.stringify({
+        codex: { state: probe.code === 0 ? "ready" : "unavailable" },
+        devin: { state: process.env.DEVIN_API_KEY ? "configured" : "unavailable" },
+      }),
+    });
+  } catch {
+    // Readiness reporting is best-effort — never blocks the worker loop.
+  }
 }
 
 async function prepareRepository(project, reporter) {
@@ -775,41 +939,23 @@ async function developmentPipeline(request, reporter) {
     const artifact = await createCodexRequestArtifact(request, project);
     baseline = await prepareRepository(project, reporter);
     executionProject = await createIsolatedWorktree(project, request, baseline);
-    await reporter.update("codex", "Codex가 비밀 파일이 없는 격리 worktree에서 요청을 처리하고 있습니다.");
-    const codexResult = await runCommand(
-      "codex",
-      [
-        "exec",
-        "--sandbox",
-        "workspace-write",
-        "--ephemeral",
-        "--json",
-        "-C",
-        executionProject.repo,
-        codexPrompt(request, project),
-      ],
-      {
-        cwd: executionProject.repo,
-        env: childEnvironment(true),
-        onStderr: (value) => reporter.appendLog(value),
-        timeoutMs: 45 * 60 * 1000,
-      },
-    );
-    const codex = parseCodexOutput(codexResult.stdout);
-    if (codexResult.code !== 0) {
-      throw new Error(`Codex 실행 실패: ${trimOutput(codexResult.stderr || codex.finalMessage, 8000)}`);
-    }
+    const executor = request.executor === "devin" ? "devin" : "codex";
+    const agentName = executor === "devin" ? "Devin" : "Codex";
+    const agent =
+      executor === "devin"
+        ? await runDevinAgent(request, project, executionProject, baseline, reporter)
+        : await runCodexAgent(request, project, executionProject, reporter);
     await reporter.assertLease();
     const currentHead = (await git(executionProject, ["rev-parse", "HEAD"])).stdout.trim();
-    if (currentHead !== baseline) throw new Error("Codex가 Git 커밋을 직접 변경해 자동 파이프라인을 중단했습니다.");
+    if (currentHead !== baseline) throw new Error(`${agentName}가 Git 커밋을 직접 변경해 자동 파이프라인을 중단했습니다.`);
     const files = await collectChangedFiles(executionProject, baseline);
     if (!files.length) {
       completed = true;
       return [
-        `Codex 실행 완료: ${project.name}`,
+        `${agentName} 실행 완료: ${project.name}`,
         "변경할 파일이 없어서 커밋과 재배포는 생략했습니다.",
         `요청 기록: ${artifact}`,
-        codex.finalMessage ? `\nCodex 보고\n${trimOutput(codex.finalMessage, 5000)}` : "",
+        agent.finalMessage ? `\n${agentName} 보고\n${trimOutput(agent.finalMessage, 5000)}` : "",
       ]
         .filter(Boolean)
         .join("\n");
@@ -830,7 +976,7 @@ async function developmentPipeline(request, reporter) {
       "",
       "검증",
       ...verification.map((value) => trimOutput(value, 3000)),
-      codex.finalMessage ? `\nCodex 보고\n${trimOutput(codex.finalMessage, 5000)}` : "",
+      agent.finalMessage ? `\n${agentName} 보고\n${trimOutput(agent.finalMessage, 5000)}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -1187,6 +1333,7 @@ export async function main() {
     return;
   }
   console.log("Hermes local worker started.");
+  await reportProviderReadiness();
   while (true) {
     try {
       const { request } = await api("/api/worker/next");

@@ -4,6 +4,7 @@ COPY mini-server.mjs ./
 COPY scripts/hermes-prefill.mjs ./scripts/hermes-prefill.mjs
 COPY scripts/hermes-system1.mjs ./scripts/hermes-system1.mjs
 COPY scripts/hermes-business-registry.mjs ./scripts/hermes-business-registry.mjs
+COPY scripts/hermes-agent-providers.mjs ./scripts/hermes-agent-providers.mjs
 COPY hermes-projects.json ./
 ENV NODE_ENV=production
 ENV PORT=3000
