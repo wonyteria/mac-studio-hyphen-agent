@@ -549,6 +549,47 @@ test("auto mode defers mutations until explicit approval", async () => {
   assert.equal(item.status, "done");
 });
 
+test("Studio handoff prefill is validated server-side and embedded safely", async () => {
+  const clean = await (await fetch(`${baseUrl}/?project=hermes-mac-ops&type=development&prompt=%ED%85%8C%EC%8A%A4%ED%8A%B8`)).text();
+  assert.match(clean, /window\.__HERMES_PREFILL__ = \{"project":"hermes-mac-ops","type":"development","prompt":"테스트"\};/);
+  assert.equal(clean.includes("__PREFILL_JSON__"), false, "placeholder must be replaced");
+
+  const bad = await (await fetch(`${baseUrl}/?project=..%2Fetc&type=shell&prompt=a%07b`)).text();
+  assert.match(bad, /window\.__HERMES_PREFILL__ = \{"project":null,"type":"auto","prompt":""\};/);
+
+  const duplicated = await (await fetch(`${baseUrl}/?prompt=x&prompt=y`)).text();
+  assert.match(duplicated, /window\.__HERMES_PREFILL__ = \{"project":null,"type":"auto","prompt":""\};/);
+
+  // Params outside the allowlist can never smuggle approval, execution, or
+  // submission state into the page.
+  const foreign = await (await fetch(`${baseUrl}/?approve=1&autoSubmit=true&execute=yes&token=abc`)).text();
+  assert.match(foreign, /window\.__HERMES_PREFILL__ = null;/);
+
+  const breaking = await (await fetch(`${baseUrl}/?prompt=${encodeURIComponent("</script><img src=x>")}`)).text();
+  assert.equal(breaking.includes("</script><img"), false, "prefill must not break out of the script tag");
+});
+
+test("handoff prefill only drafts the composer after login and never submits", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Applied only inside the authenticated load() path, after project options exist.
+  const loader = html.match(/async function load\(\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(loader, "load() missing");
+  assert.match(loader[0], /applyHandoffPrefill\(\)/);
+  assert.ok(loader[0].indexOf('document.body.classList.add("authed")') < loader[0].indexOf("applyHandoffPrefill()"), "prefill must apply after auth succeeds");
+  const apply = html.match(/function applyHandoffPrefill\(\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(apply, "applyHandoffPrefill missing");
+  // The draft stays editable: notice copy, capability guidance, focus — and no
+  // path to submission, approval, or any network call.
+  assert.match(apply[0], /확인하고 직접 보내야 실행됩니다/);
+  assert.match(apply[0], /refreshPresetGuidance\(\)/);
+  for (const forbidden of ["requestSubmit", "fetch(", "api(", "approve", "/api/", "submit("]) {
+    assert.equal(apply[0].includes(forbidden), false, `prefill path must not ${forbidden}`);
+  }
+  // Reapplication is impossible: the global is cleared and the URL is reset.
+  assert.match(apply[0], /window\.__HERMES_PREFILL__ = null/);
+  assert.match(apply[0], /history\.replaceState/);
+});
+
 test("cancels queued requests before the worker starts", async () => {
   const created = await request("/api/requests", {
     method: "POST",

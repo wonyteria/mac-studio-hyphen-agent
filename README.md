@@ -8,6 +8,7 @@ The production deployment at `https://hermes.hyphen.it.com` currently runs the c
 
 - password-protected internal chat UI branded as the Hyphen Studio Agent workspace
 - empty-state action presets (오늘 브리핑 / 오늘 우선순위 / 막힌 프로젝트 / Mac 상태 점검 / 배포 상태 확인) that only prefill the composer — never auto-submit or bypass approval; the briefing/priority/blocked presets are true cross-project actions scoped to 전체 Hyphen Studio via the `studio_overview`/`studio_priorities`/`studio_blockers` types, while Mac/deployment presets stay selected-project scoped and the composer warns with type-specific Korean guidance when the selected project lacks the required capability (the backend gate still decides)
+- bounded Studio handoff prefill: the Studio cockpit's `Agent에게 실행 요청` action opens `https://hermes.hyphen.it.com` with `?project=&type=&prompt=` query parameters that draft a new composer after login — validated fail-closed against the project registry and request-type allowlist, never auto-submitted, never bypassing approval
 - truthful connection indicator driven by real API results, plus visible project context on the active request
 - request queue persisted to the mini deploy data volume
 - local LaunchAgent worker polling the queue from the Mac Studio
@@ -32,6 +33,21 @@ The production deployment at `https://hermes.hyphen.it.com` currently runs the c
 - `development`: after approval, run Codex in the registered repository, verify, commit, push, redeploy, and health-check
 - `file_cleanup`: approval-required cleanup planning through Hermes MacOps tools
 - `custom`: legacy alias for tool-free `hermes_chat`
+
+## Studio Handoff Prefill
+
+The Studio cockpit and admin request inbox can hand a selected project or intake request to this workspace through one `Agent에게 실행 요청` action. The action opens `https://hermes.hyphen.it.com` with three bounded query parameters — `project`, `type`, and `prompt` — that prefill a new composer draft.
+
+`GET /` validates every value server-side in `scripts/hermes-prefill.mjs` before it is embedded as `window.__HERMES_PREFILL__`:
+
+- `project` resolves only against the server-side registry (id, display name, slugged name, domain host or first label). Anything else falls back to the composer default — the URL can never name a registry path.
+- `type` must be a composer-selectable request type, and capability-gated types (`deployment_status`, `project_inspect`, `redeploy`, `development`) additionally require the effective project's declared `capabilities`; failures degrade to `auto`.
+- `prompt` is editable natural-language text capped at 2000 characters.
+- Unknown or duplicated parameters, oversized values, control characters, and malformed encoding all fail closed to neutral defaults (`project: null`, `type: "auto"`, `prompt: ""`); unrelated parameters are ignored entirely.
+
+The embedded object carries only `{project, type, prompt}` — the browser cannot supply a registry path, shell command, credential, approval, auto-submit flag, or execution state. After login, the workspace applies the draft once: it fills the composer fields, shows a `Studio에서 넘겨받은 초안` guidance notice, clears the value, and resets the URL. It never submits automatically and never bypasses login or approval — public Studio intake arrives as editable text the owner must review, send, and approve like any manual request.
+
+The Dockerfile ships `scripts/hermes-prefill.mjs` alongside the server; no extra configuration is required.
 
 ## Project Registry
 

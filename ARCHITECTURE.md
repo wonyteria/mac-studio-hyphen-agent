@@ -21,9 +21,13 @@ Mac Studio LaunchAgent
        -> Codex CLI (workspace-write, secrets scrubbed)
        -> Git remote
        -> mini deploy API -> Docker container -> domain /health
-```
 
-## Request Lifecycle
+Studio cockpit (studio.hyphen.it.com, admin scope)
+  -> "Agent에게 실행 요청" action
+       -> GET /?project=&type=&prompt=  (bounded prefill params)
+       -> server-side validation in scripts/hermes-prefill.mjs
+       -> editable composer draft after login -> manual submit -> normal lifecycle
+```
 
 ```text
 created -> queued -> running -> done
@@ -65,6 +69,7 @@ Production deployment lease extension was verified on 2026-08-16.
 ## Trust Boundaries
 
 - The website never accepts arbitrary commands or repository paths.
+- The Studio handoff accepts only `project`, `type`, and `prompt` query parameters. `project` resolves strictly against registry ids, names, and domain aliases; `type` must be a composer-selectable type that satisfies the effective project's `capabilities`; `prompt` is editable text capped at 2000 characters. Unknown, duplicated, oversized, control-character, or malformed values fail closed to neutral defaults, and foreign parameters are ignored — the URL can never carry a registry path, shell command, credential, approval, auto-submit flag, or execution state, and the applied draft can never submit itself or bypass login or approval.
 - The registry mirrors mini deploy projects for read-only status, but grants mutation capabilities only to entries with an exact local repository and deterministic verification commands.
 - Tool-free Hermes chat calls Ollama directly and cannot execute commands. Approval-required `hermes_ops` uses Hermes only to select a fixed operation enum; arbitrary model-generated shell commands are never executed.
 - The public project API returns only project ID, name, and domain.

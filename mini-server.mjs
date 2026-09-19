@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname } from "node:path";
+import { parseHandoffPrefill, serializePrefillForHtml } from "./scripts/hermes-prefill.mjs";
 
 const port = Number(process.env.PORT || 3000);
 const adminPassword = process.env.ADMIN_PASSWORD || "";
@@ -421,6 +422,7 @@ const html = `<!doctype html>
       </form>
     </section>
   </section>
+  <script>window.__HERMES_PREFILL__ = __PREFILL_JSON__;</script>
   <script>
     const $ = (id) => document.getElementById(id);
     const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
@@ -448,6 +450,7 @@ const html = `<!doctype html>
     let pollTimer = null;
     let projectNames = {};
     let projectCapabilities = {};
+    let prefillApplied = false;
     async function api(path, init) {
       const res = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...init });
       const data = await res.json().catch(() => ({}));
@@ -485,6 +488,7 @@ const html = `<!doctype html>
         $("project").innerHTML = projects.map((project) => '<option value="' + esc(project.id) + '">' + esc(project.name) + '</option>').join("");
         if (projects.some((project) => project.id === selectedProject)) $("project").value = selectedProject;
         refreshPresetGuidance();
+        applyHandoffPrefill();
         render(requests);
         api("/api/system1/summary").then(renderEvidence).catch(() => renderEvidence(null));
         clearTimeout(pollTimer);
@@ -557,6 +561,27 @@ const html = `<!doctype html>
       $("type").value = preset.type;
       if (preset.project && [...$("project").options].some((option) => option.value === preset.project)) $("project").value = preset.project;
       refreshPresetGuidance();
+      $("body").focus();
+    }
+    // Studio handoff: the server already validated every prefill field against
+    // the registry and type allowlists. This only fills the editable composer —
+    // it never submits, never approves, and runs once per page load. Clearing
+    // the value and the query string keeps refreshes from reapplying it.
+    function applyHandoffPrefill() {
+      if (prefillApplied) return;
+      const prefill = window.__HERMES_PREFILL__;
+      if (!prefill || typeof prefill !== "object") return;
+      prefillApplied = true;
+      window.__HERMES_PREFILL__ = null;
+      try { history.replaceState(null, "", location.pathname); } catch { /* keep the URL if replace fails */ }
+      if (prefill.project && [...$("project").options].some((option) => option.value === prefill.project)) $("project").value = prefill.project;
+      if (prefill.type && [...$("type").options].some((option) => option.value === prefill.type)) $("type").value = prefill.type;
+      $("body").value = typeof prefill.prompt === "string" ? prefill.prompt : "";
+      current = null;
+      composingNew = true;
+      refreshPresetGuidance();
+      $("formStatus").textContent = "Studio에서 넘겨받은 초안입니다. 내용을 확인하고 직접 보내야 실행됩니다.";
+      $("formStatus").dataset.guide = "1";
       $("body").focus();
     }
     function render(requests) {
@@ -1020,7 +1045,14 @@ createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/health") return send(res, 200, { status: "ok" });
-    if (url.pathname === "/") return send(res, 200, html);
+    if (url.pathname === "/") {
+      // Studio handoff prefill: every query value is validated against the
+      // registry and type allowlists before it reaches the page; failures fall
+      // back to neutral defaults inside a {project, type, prompt}-only object.
+      const projects = await readProjects().catch(() => []);
+      const prefill = parseHandoffPrefill(url.searchParams, projects);
+      return send(res, 200, html.replace("__PREFILL_JSON__", () => serializePrefillForHtml(prefill)));
+    }
     if (url.pathname === "/api/login" && req.method === "POST") {
       const address = clientAddress(req);
       if (loginBlocked(address)) return send(res, 429, { error: "too_many_attempts" });

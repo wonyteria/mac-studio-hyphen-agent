@@ -4,7 +4,8 @@ Internal Korean-first chat console that operates the Mac Studio deployment serve
 
 ## Layout
 
-- `mini-server.mjs` — production web gateway (request queue, auth, capability gates). Reads `hermes-projects.json` via `HERMES_PROJECTS_FILE`.
+- `mini-server.mjs` — production web gateway (request queue, auth, capability gates). Reads `hermes-projects.json` via `HERMES_PROJECTS_FILE`. `GET /` renders the Studio handoff prefill via `scripts/hermes-prefill.mjs` (`?project=&type=&prompt=` only).
+- `scripts/hermes-prefill.mjs` — bounded Studio→Hermes composer prefill contract: validates `project`/`type`/`prompt` query params against the registry and request-type allowlist, fails closed to neutral defaults on unknown/duplicate/oversized/control-character/malformed values, and serializes only `{project, type, prompt}` for safe embedding. No registry paths, shell commands, credentials, approval, auto-submit, or execution state can cross; the draft never submits itself.
 - `scripts/hermes-local-worker.mjs` — Mac Studio worker. Deployed as a **single self-contained file** to `~/.local/share/hermes-ops/`; it must not import sibling modules. All path defaults derive from `os.homedir()` — never hardcode `/Users/<name>`.
 - `scripts/hermes-project-registry.mjs` — shared registry library: canonical path resolution, validation, migration planning.
 - `scripts/hermes-registry-preflight.mjs` — read-only registry validator (exit 0/1/2).
@@ -29,7 +30,7 @@ Internal Korean-first chat console that operates the Mac Studio deployment serve
 ## Commands
 
 ```bash
-npm run test:runtime        # node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs
+npm run test:runtime        # node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs tests/studio-briefing.test.mjs tests/prefill.test.mjs
 npm run lint                # eslint .
 node --check <file.mjs>     # syntax check worker/server scripts
 node scripts/hermes-registry-preflight.mjs   # registry health (read-only)
