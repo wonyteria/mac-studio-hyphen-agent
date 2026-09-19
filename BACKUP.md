@@ -177,16 +177,89 @@ identical input state yields byte-identical output. Finding codes:
 4. `preflight`/`verify` after the rehearsal — all required sources `ok`, zero
    findings, before resuming services.
 
-## Remaining manual steps (never automated here)
+## Backup executor (`scripts/hermes-backup-executor.mjs`)
 
-- Running actual backups: Time Machine runs on its own schedule; the
-  `com.hyphen.project-mirror-backups` job and mini deploy `*.backup-*`
-  snapshots are owned by their own tooling — this tool only reads their status.
-- The sqlite quiesce/online-backup strategy itself (e.g.
-  `sqlite3 platform.db ".backup out.db"` or stopping `com.hyphen.mini-vercel`).
-- Restoring protected files (`.env`, `auth.json`, tokens) — operators handle
-  them from the backup directly; this tool never carries their contents.
+The readiness tool above stays **read-only forever**. The executor is a
+separate, explicit command — the only component that creates snapshots. It
+shares the manifest contract but none of the read-only guarantees: it copies
+files. Everything it writes lives under one explicit destination —
+`--destination <dir>` or `HERMES_BACKUP_DESTINATION` — never inferred from the
+manifest, the projects registry, or the home directory. A missing destination
+is a hard error (`destination_unavailable`); `status` reports `unavailable`
+and nothing is activated.
+
+```bash
+node scripts/hermes-backup-executor.mjs run --destination /Volumes/Backups/hermes
+node scripts/hermes-backup-executor.mjs status --destination /Volumes/Backups/hermes
+node scripts/hermes-backup-executor.mjs verify --destination /Volumes/Backups/hermes [--snapshot <id>]
+node scripts/hermes-backup-executor.mjs rehearse --destination /Volumes/Backups/hermes [--snapshot <id>]
+node scripts/hermes-backup-executor.mjs install --destination /Volumes/Backups/hermes --keep 7
+node scripts/hermes-backup-executor.mjs uninstall
+```
+
+### run — snapshot pipeline
+
+1. `scanManifest` preflight — any error finding refuses to back up.
+2. PID lock (`.hermes-backup.lock`, stale-aware) blocks overlapping runs.
+3. Copy into `snapshot-<UTC>.partial/` — file sources copied + sha256'd;
+   directory sources walk with the *same* rules as the readiness scanner
+   (sorted names, same bounds, `exclude[]` honored, protected names recorded
+   as `kind: "protected"` and never copied, symlinks never followed — an
+   escape aborts the whole run); sqlite uses `sqlite3 .backup` when the set
+   is live or `consistency: online-backup`, a plain copy only when provably
+   at rest — never a torn WAL copy.
+4. `snapshot.json` manifest records every copied file's sha256.
+5. Atomic `rename` to `snapshot-<UTC>/` — a crash leaves only ignorable
+   `.partial` dirs.
+6. Retention (`--keep`, default 7, cap 60) deletes only dirs matching
+   `^snapshot-\d{8}T\d{6}Z$` — nothing else is ever removed.
+7. `hermes-backup-state.json` at the destination records a bounded result
+   (`lastResult`, `lastSnapshotId`, `lastError{code,message≤240}`) — the
+   failure-notification payload.
+
+A required source that fails discards the snapshot. A failed *optional*
+source keeps the snapshot but marks the result `partial: true` — never a
+silent success.
+
+### verify / rehearse
+
+- `verify` re-hashes every recorded artifact against `snapshot.json` and
+  reports mismatches (`missing`/`hash_mismatch`).
+- `rehearse` copies a snapshot into an isolated `mkdtemp` directory,
+  re-verifies every checksum, runs `PRAGMA integrity_check` on rehearsed
+  sqlite copies, and deletes the temp dir. Live sources are never touched.
+  There is **no destructive restore** — restoring to live paths stays an
+  operator procedure (`restore-plan`).
+
+### install — LaunchAgent scheduling
+
+`install` writes `~/Library/LaunchAgents/com.hyphen.hermes-backup.plist`
+(RunAtLoad=false, StartInterval=21600) pointing at an explicit destination +
+manifest. It refuses to bake in a script path under a TCC-protected location
+(`~/Documents`, `~/Desktop`, `~/Downloads`, `CloudStorage`) — stage the repo
+outside those trees first. The plist is written atomically; loading is still
+an explicit operator `launchctl bootstrap`. `uninstall` removes the plist.
+Both are repeatable; rollback = `uninstall` + delete the destination dir.
+
+### status — truthful readiness
+
+`unavailable` (no destination), `unverified` (destination exists, no
+snapshots), `unknown` (snapshots exist but last run failed), `ok` (last run
+recorded success). Missing credentials/paths never render as healthy.
+
+## Remaining manual steps (never automated)
+
+- Time Machine runs on its own schedule; the `com.hyphen.project-mirror-backups`
+  job and mini deploy `*.backup-*` snapshots are owned by their own tooling —
+  both tools only read their status. The executor writes only its own
+  `snapshot-*` dirs under the declared destination.
+- Restoring protected files (`.env`, `auth.json`, tokens) — neither tool ever
+  reads, copies, or carries their contents; operators restore them directly.
+- Restoring to live paths — no destructive restore exists anywhere; rehearsal
+  is temp-dir only.
 - Docker volume data (e.g. `HERMES_DATA_FILE` at `/app/var/data/requests.json`
   inside the mini deploy container) — covered by the container's own backup
   story, not by host paths; inspect via the mini deploy tooling.
-- Writer stop/start, LaunchAgent load/unload, and any schedule changes.
+- Writer stop/start (a live-WAL sqlite set is backed up via `sqlite3 .backup`;
+  the executor never stops `com.hyphen.mini-vercel` itself), LaunchAgent
+  load/unload beyond the executor's own plist, and schedule changes.
