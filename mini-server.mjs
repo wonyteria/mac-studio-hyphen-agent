@@ -29,9 +29,14 @@ const requestTypes = new Set([
   "custom",
   "studio_priorities",
   "studio_blockers",
+  "studio_overview",
 ]);
-const studioBriefingTypes = new Set(["studio_priorities", "studio_blockers"]);
-const studioViewByType = { studio_priorities: "priorities", studio_blockers: "blockers" };
+const studioBriefingTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview"]);
+const studioViewByType = {
+  studio_priorities: "priorities",
+  studio_blockers: "blockers",
+  studio_overview: "overview",
+};
 const resolvedRequestTypes = new Set([
   "hermes_chat",
   "mac_status",
@@ -396,6 +401,7 @@ const html = `<!doctype html>
               <select id="project" class="project" aria-label="대상 프로젝트"></select>
               <select id="type" aria-label="요청 종류">
                 <option value="auto">자동 판단</option>
+                <option value="studio_overview">전체 Studio 브리핑</option>
                 <option value="studio_priorities">전체 Studio 우선순위</option>
                 <option value="studio_blockers">전체 Studio 막힌 프로젝트</option>
                 <option value="hermes_chat">Hermes 4.3 대화</option>
@@ -417,12 +423,13 @@ const html = `<!doctype html>
   </section>
   <script>
     const $ = (id) => document.getElementById(id);
-    const labels = { auto: "자동 판단", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
-    const studioScopeTypes = new Set(["studio_priorities", "studio_blockers"]);
+    const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
+    const studioScopeTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview"]);
     const statusLabels = { queued: "대기 중", approval_required: "승인 필요", running: "실행 중", done: "완료", failed: "실패", canceled: "취소됨" };
     const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
     const verdictLabels = { allow: "허용", warn: "주의", block: "차단" };
     const presets = [
+      { id: "briefing", label: "오늘 브리핑", body: "전체 Hyphen Studio의 오늘 브리핑을 보여줘", type: "studio_overview" },
       { id: "priorities", label: "오늘 우선순위", body: "전체 Hyphen Studio 프로젝트의 오늘 우선순위를 정리해줘", type: "studio_priorities" },
       { id: "blocked", label: "막힌 프로젝트", body: "전체 Hyphen Studio에서 지금 막힌 프로젝트를 알려줘", type: "studio_blockers" },
       { id: "mac", label: "Mac 상태 점검", body: "Mac 상태를 점검해줘", type: "mac_status" },
@@ -560,7 +567,7 @@ const html = `<!doctype html>
       if (!active) {
         $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>프로젝트를 고르고 자연스럽게 요청하면 Hermes가 Mac Studio에서 안전하게 처리합니다.</p><div class="preset-grid">' +
           presets.map((preset) => '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
-          '</div><p class="preset-scope">우선순위·막힌 프로젝트는 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
+          '</div><p class="preset-scope">브리핑·우선순위·막힌 프로젝트는 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
         return;
       }
       const events = (active.events || []).slice(-6).reverse().map((event) => '<div class="event"><span>' + esc(new Date(event.at).toLocaleTimeString()) + '</span><strong>' + esc(event.message) + '</strong></div>').join("");
@@ -801,34 +808,86 @@ function studioErrorCode(error) {
   return studioErrorCodes.has(code) ? code : "registry_error";
 }
 
-// Bounded owner-facing rendering of one briefing section. Only registry-
-// derived Korean summaries, blocker descriptions, verification flags, coverage
-// counts, and safe source metadata — never raw registry JSON, evidence refs,
+const studioOverviewMaxItems = 5;
+const studioOverviewSectionMaxChars = 620;
+const studioViewBodyMaxChars = 3400;
+const studioNameMaxChars = 60;
+const studioSummaryMaxChars = 200;
+const studioBlockerMaxChars = 140;
+const studioSinceMaxChars = 24;
+const studioViewTitles = { priorities: "오늘 우선순위", blockers: "막힌 프로젝트", overview: "오늘 브리핑" };
+const studioOverviewSections = [
+  ["오늘의 상위 우선순위", "topPriorities"],
+  ["막힌 일", "blocked"],
+  ["매출·고객 신호", "revenueSignals"],
+  ["시스템 이상", "systemAnomalies"],
+  ["소유자 승인이 필요한 일", "ownerApprovals"],
+];
+
+// Registry strings are unbounded: flatten every display field to a single
+// line and cap it so no value can consume the result budget or inject extra
+// section/header lines.
+function studioText(value, maxChars) {
+  const flat = String(value ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
+}
+
+function pushStudioItems(lines, items, { showBlockers = false, maxItems = studioResultMaxItems } = {}) {
+  if (items.length === 0) {
+    lines.push("근거 없음 — 입력 레지스트리에 해당 신호가 없습니다. 확인 필요.");
+    return;
+  }
+  for (const [index, item] of items.slice(0, maxItems).entries()) {
+    lines.push(
+      `${index + 1}. ${studioText(item.projectName, studioNameMaxChars)} — ${studioText(item.summary, studioSummaryMaxChars)} · ${item.verified ? "근거 있음" : "확인 필요"}`,
+    );
+    if (showBlockers) {
+      for (const blocker of (item.details?.blockers || []).slice(0, studioResultMaxBlockers)) {
+        const description = studioText(blocker.description, studioBlockerMaxChars);
+        const since = studioText(blocker.since, studioSinceMaxChars);
+        lines.push(`   - ${description}${since ? ` (${since}~)` : ""}`);
+      }
+    }
+  }
+  if (items.length > maxItems) lines.push(`… 외 ${items.length - maxItems}개`);
+}
+
+// Deterministic per-section character budget: every overview section header
+// and the final coverage line are guaranteed to survive the 4000-char cap.
+function pushStudioSection(lines, items, options) {
+  const sectionLines = [];
+  pushStudioItems(sectionLines, items, options);
+  const text = sectionLines.join("\n");
+  lines.push(text.length <= options.budget ? text : `${text.slice(0, options.budget)}…`);
+}
+
+// Bounded owner-facing rendering of briefing sections. Only registry-derived
+// Korean summaries, blocker descriptions, verification flags, coverage counts,
+// and safe source metadata — never raw registry JSON, evidence refs,
 // owner/contact names, paths, source filenames, or any source-hash material.
-function renderStudioView(view, items, briefing) {
-  const title = view === "priorities" ? "오늘 우선순위" : "막힌 프로젝트";
+function renderStudioView(view, briefing) {
   const lines = [
-    `전체 Hyphen Studio · ${title}`,
+    `전체 Hyphen Studio · ${studioViewTitles[view] || "브리핑"}`,
     `소스: ${studioSourceLabel} · 업데이트 ${briefing.source.updatedAt}`,
     `범위: hyphen 코어 ${briefing.coverage.hyphenCore}개 프로젝트 (제외 ${briefing.coverage.excluded}개)`,
     "",
   ];
-  if (items.length === 0) {
-    lines.push("근거 없음 — 입력 레지스트리에 해당 신호가 없습니다. 확인 필요.");
-  } else {
-    for (const [index, item] of items.slice(0, studioResultMaxItems).entries()) {
-      lines.push(`${index + 1}. ${item.projectName} — ${item.summary} · ${item.verified ? "근거 있음" : "확인 필요"}`);
-      if (view === "blockers") {
-        for (const blocker of (item.details?.blockers || []).slice(0, studioResultMaxBlockers)) {
-          const description = String(blocker.description || "").slice(0, 140);
-          lines.push(`   - ${description}${blocker.since ? ` (${blocker.since}~)` : ""}`);
-        }
-      }
+  if (view === "overview") {
+    for (const [title, key] of studioOverviewSections) {
+      lines.push(`■ ${title}`);
+      pushStudioSection(lines, briefing.sections[key], {
+        showBlockers: key === "blocked",
+        maxItems: studioOverviewMaxItems,
+        budget: studioOverviewSectionMaxChars,
+      });
+      lines.push("");
     }
-    if (items.length > studioResultMaxItems) lines.push(`… 외 ${items.length - studioResultMaxItems}개`);
+  } else {
+    const items = view === "blockers" ? briefing.sections.blocked : briefing.sections.topPriorities;
+    pushStudioSection(lines, items, { showBlockers: view === "blockers", budget: studioViewBodyMaxChars });
+    lines.push("");
   }
   lines.push(
-    "",
     `미검증 현황: 상태 미상 ${briefing.coverage.statusUnknown}개 · 근거 미충족 ${briefing.coverage.evidenceUnverified}개 · owner 미지정 ${briefing.coverage.ownerMissing}개`,
   );
   return lines.join("\n").slice(0, studioResultMaxChars);
@@ -860,12 +919,15 @@ async function runStudioBriefing(request) {
       expectedHash: businessRegistryExpectedHash || undefined,
     });
     const briefing = registryLib.buildBusinessBriefing(registry);
-    const items = view === "blockers" ? briefing.sections.blocked : briefing.sections.topPriorities;
-    finish("done", renderStudioView(view, items, briefing), {
+    const itemCount =
+      view === "overview"
+        ? studioOverviewSections.reduce((total, [, key]) => total + briefing.sections[key].length, 0)
+        : (view === "blockers" ? briefing.sections.blocked : briefing.sections.topPriorities).length;
+    finish("done", renderStudioView(view, briefing), {
       view,
       sourceLabel: studioSourceLabel,
       updatedAt: briefing.source.updatedAt,
-      itemCount: items.length,
+      itemCount,
     });
     addEvent(request, "Studio 브리핑 생성");
   } catch (error) {

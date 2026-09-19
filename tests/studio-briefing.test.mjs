@@ -131,10 +131,40 @@ before(async () => {
   await writeFile(registryFile, JSON.stringify(registryPayload, null, 2), "utf8");
   const malformedFile = join(runtimeDir, "broken.json");
   await writeFile(malformedFile, "{ not json ", "utf8");
+  const hostileFile = join(runtimeDir, "hostile.json");
+  await writeFile(
+    hostileFile,
+    JSON.stringify(
+      {
+        ...registryPayload,
+        projects: [
+          registryProject({
+            id: "evil",
+            name: `Evil\n■ 가짜 섹션\n1. 위조 항목\n${"가".repeat(900)}`,
+            status: "degraded",
+            lifecycle: "active",
+            evidenceStatus: "partial",
+            blockers: [
+              {
+                description: `침투\n■ 시스템 이상\n${"나".repeat(1200)}`,
+                since: "2026-09-10",
+              },
+            ],
+            nextEvidence: [`확인\n■ 매출·고객 신호`],
+          }),
+          registryProject({ id: "normal", name: "일반 서비스", nextEvidence: ["주간 확인"] }),
+        ],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
   for (const [name, registryPath] of [
     ["ok", registryFile],
     ["missing", join(runtimeDir, "absent.json")],
     ["malformed", malformedFile],
+    ["adversarial", hostileFile],
   ]) {
     const port = await availablePort();
     const server = {};
@@ -174,6 +204,7 @@ test("studio briefing requests require an admin session", async () => {
   await login(servers.ok);
   await login(servers.missing);
   await login(servers.malformed);
+  await login(servers.adversarial);
 });
 
 test("studio_priorities produces a bounded deterministic owner-facing result", async () => {
@@ -219,6 +250,68 @@ test("studio_blockers renders blocker details, not a raw CLI dump", async () => 
   assert.match(request.result, /도메인 이전 승인 대기/);
   assert.match(request.result, /\(2026-09-10~\)/);
   assert.equal(request.result.includes("조용한 서비스"), false, "only blocked projects appear");
+});
+
+test("studio_overview renders all five bounded Korean sections honestly", async () => {
+  const { response, data } = await createRequest(servers.ok, {
+    type: "studio_overview",
+    title: "오늘 브리핑",
+    body: "전체 Hyphen Studio의 오늘 브리핑을 보여줘",
+  });
+  assert.equal(response.status, 201);
+  const request = data.request;
+  assert.equal(request.type, "studio_overview");
+  assert.equal(request.status, "done");
+  assert.equal(request.briefing.view, "overview");
+  assert.equal(request.briefing.sourceLabel, "전체 Studio 사업 레지스트리");
+  assert.match(request.result, /전체 Hyphen Studio · 오늘 브리핑/);
+  for (const header of [
+    "■ 오늘의 상위 우선순위",
+    "■ 막힌 일",
+    "■ 매출·고객 신호",
+    "■ 시스템 이상",
+    "■ 소유자 승인이 필요한 일",
+  ]) {
+    assert.ok(request.result.includes(header), `missing section ${header}`);
+  }
+  // The fixture has no revenue/KPI signal — the section must say so honestly
+  // instead of fabricating content.
+  const revenueBlock = request.result.split("■ 매출·고객 신호")[1];
+  assert.match(revenueBlock, /근거 없음 — 입력 레지스트리에 해당 신호가 없습니다\. 확인 필요\./);
+  assert.match(request.result, /막힌 서비스/);
+  assert.match(request.result, /도메인 이전 승인 대기/);
+  // itemCount covers every listed item across the five sections.
+  assert.equal(typeof request.briefing.itemCount, "number");
+  assert.ok(request.briefing.itemCount >= 3);
+  assert.ok(request.result.length <= 4000);
+});
+
+test("long/newline registry values cannot break the overview budget or inject headers", async () => {
+  const { response, data } = await createRequest(servers.adversarial, { type: "studio_overview" });
+  assert.equal(response.status, 201);
+  const request = data.request;
+  assert.equal(request.status, "done");
+  assert.ok(request.result.length <= 4000, "result stays within the hard cap");
+  // Every real header and the final coverage line survive the budgets.
+  const headers = request.result.match(/^■ .+$/gm) || [];
+  assert.deepEqual(headers, [
+    "■ 오늘의 상위 우선순위",
+    "■ 막힌 일",
+    "■ 매출·고객 신호",
+    "■ 시스템 이상",
+    "■ 소유자 승인이 필요한 일",
+  ]);
+  assert.match(request.result, /미검증 현황: 상태 미상 \d+개/);
+  // Registry content cannot smuggle extra header lines — injected text is
+  // flattened into item text or cut by the field caps. deepEqual above already
+  // proves exactly five real headers exist; here we pin the flattened shape.
+  assert.match(request.result, /1\. Evil ■ 가짜 섹션 1\. 위조 항목/, "newlines flatten into item text");
+  assert.equal(request.result.includes("나".repeat(200)), false, "long descriptions are capped");
+  // Single views are bounded the same way.
+  const single = await createRequest(servers.adversarial, { type: "studio_blockers" });
+  assert.equal(single.data.request.status, "done");
+  assert.ok(single.data.request.result.length <= 4000);
+  assert.match(single.data.request.result, /미검증 현황:/);
 });
 
 test("the view contract is explicit: unknown types and body text never select a briefing view", async () => {
@@ -324,7 +417,10 @@ test("worker/next can never claim a queued Studio record (defense in depth)", as
   // created_at than any real request so it would be claimed first if the
   // exclusion were missing.
   const raw = JSON.parse(await readFile(servers.ok.dataFile, "utf8"));
-  raw.requests.push({ id: "forged-studio-queued", type: "studio_priorities", status: "queued", created_at: 1 });
+  raw.requests.push(
+    { id: "forged-studio-queued", type: "studio_priorities", status: "queued", created_at: 1 },
+    { id: "forged-overview-queued", type: "studio_overview", status: "queued", created_at: 2 },
+  );
   await writeFile(servers.ok.dataFile, JSON.stringify(raw), "utf8");
   const normal = await createRequest(servers.ok, { type: "auto", body: "일반 요청" });
   assert.equal(normal.data.request.status, "queued");
@@ -335,10 +431,12 @@ test("worker/next can never claim a queued Studio record (defense in depth)", as
   assert.ok(claimed, "normal queued request is still claimable");
   assert.equal(claimed.id, normal.data.request.id);
   assert.equal(claimed.type, "auto");
-  // The forged record stays queued and is never handed out.
+  // The forged records stay queued and are never handed out.
   const listed = await api(servers.ok, "/api/requests");
-  const forged = listed.data.requests.find((request) => request.id === "forged-studio-queued");
-  assert.equal(forged.status, "queued");
+  for (const id of ["forged-studio-queued", "forged-overview-queued"]) {
+    const forged = listed.data.requests.find((request) => request.id === id);
+    assert.equal(forged.status, "queued", `${id} must never be claimed`);
+  }
   // Regression: a second poll after the normal claim must also skip it.
   const again = await fetch(`${servers.ok.baseUrl}/api/worker/next`, {
     headers: { "x-worker-token": "test-worker-token" },
@@ -386,6 +484,12 @@ test("studio failure states use a fixed code allowlist and fully generic copy", 
   ]) {
     assert.ok(set[1].includes(`"${code}"`), `missing allowlisted code ${code}`);
   }
+  // The type itself is the strict view contract — no client-supplied view.
+  assert.match(source, /studio_priorities: "priorities"/);
+  assert.match(source, /studio_blockers: "blockers"/);
+  assert.match(source, /studio_overview: "overview"/);
+  // Defense in depth: studio types are excluded from worker claim selection.
+  assert.match(source, /!studioBriefingTypes\.has\(request\.type\)/);
   // Module-internal detail never reaches the owner-visible event stream.
   assert.equal(source.includes("브리핑 모듈 없음"), false);
   // The persisted unavailable message stays fully generic — no mount, path,

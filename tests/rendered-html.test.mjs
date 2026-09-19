@@ -115,10 +115,11 @@ test("shows truthful connection state driven by API results", async () => {
 
 test("empty-state presets only prefill and select existing request types", async () => {
   const html = await (await fetch(baseUrl)).text();
-  for (const label of ["오늘 우선순위", "막힌 프로젝트", "Mac 상태 점검", "배포 상태 확인"]) {
+  for (const label of ["오늘 브리핑", "오늘 우선순위", "막힌 프로젝트", "Mac 상태 점검", "배포 상태 확인"]) {
     assert.ok(html.includes(`label: "${label}"`), `missing preset ${label}`);
   }
   for (const [id, type] of [
+    ["briefing", "studio_overview"],
     ["priorities", "studio_priorities"],
     ["blocked", "studio_blockers"],
     ["mac", "mac_status"],
@@ -128,12 +129,12 @@ test("empty-state presets only prefill and select existing request types", async
   }
   // The cross-project presets scope to 전체 Hyphen Studio, not the selected
   // repository: explicit allowlisted studio types, never project_inspect.
-  for (const id of ["priorities", "blocked"]) {
+  for (const id of ["briefing", "priorities", "blocked"]) {
     const line = html.match(new RegExp(`id: "${id}".*`, "g"));
     assert.ok(line && !line[0].includes("project_inspect"), `preset ${id} must not use project_inspect`);
   }
   assert.match(html, /전체 Hyphen Studio/, "cross-project scope must be visible");
-  assert.match(html, /studioScopeTypes = new Set\(\["studio_priorities", "studio_blockers"\]\)/);
+  assert.match(html, /studioScopeTypes = new Set\(\["studio_priorities", "studio_blockers", "studio_overview"\]\)/);
   assert.match(html, /"전체 Hyphen Studio" : \(projectNames/, "block-head scope for studio types");
   // The scope stays visible before submit (composer hint) and after submit
   // (block-head), and no source-hash fingerprint is ever rendered.
@@ -158,6 +159,7 @@ test("empty-state presets only prefill and select existing request types", async
     "custom",
     "studio_priorities",
     "studio_blockers",
+    "studio_overview",
   ];
   for (const type of html.matchAll(/type: "([a-z_]+)"/g)) {
     assert.ok(knownTypes.includes(type[1]), `preset selects unknown type ${type[1]}`);
