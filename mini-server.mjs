@@ -9,6 +9,11 @@ const sessionSecret = process.env.SESSION_SECRET || "";
 const workerToken = process.env.WORKER_TOKEN || "";
 const dataFile = process.env.HERMES_DATA_FILE || "/app/var/data/requests.json";
 const projectsFile = process.env.HERMES_PROJECTS_FILE || "/app/hermes-projects.json";
+// Server-configured only: the Studio business registry is mounted read-only
+// into the runtime, never embedded in the image and never accepted from a
+// client-supplied path.
+const businessRegistryFile = process.env.HERMES_BUSINESS_REGISTRY || "/app/var/business/registry.private.json";
+const businessRegistryExpectedHash = process.env.HERMES_BUSINESS_REGISTRY_EXPECTED_HASH || "";
 const system1ShadowEnabled = process.env.HERMES_SYSTEM1_SHADOW === "1";
 const sessionCookie = "hermes_session";
 const requestTypes = new Set([
@@ -22,7 +27,11 @@ const requestTypes = new Set([
   "file_cleanup",
   "development",
   "custom",
+  "studio_priorities",
+  "studio_blockers",
 ]);
+const studioBriefingTypes = new Set(["studio_priorities", "studio_blockers"]);
+const studioViewByType = { studio_priorities: "priorities", studio_blockers: "blockers" };
 const resolvedRequestTypes = new Set([
   "hermes_chat",
   "mac_status",
@@ -302,6 +311,7 @@ const html = `<!doctype html>
       width: 34px;
     }
     .error { color: var(--danger); font-size: 13px; min-height: 18px; }
+    .error[data-guide="1"] { color: var(--muted); }
     .progress-copy { color: var(--muted); font-size: 13px; padding: 10px 12px 0; }
     .event-list { border-top: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
     .event { color: var(--muted); display: grid; font-size: 12px; gap: 2px; grid-template-columns: 82px minmax(0, 1fr); }
@@ -309,6 +319,7 @@ const html = `<!doctype html>
     .empty { color: var(--muted); margin: 18vh auto 0; max-width: 560px; text-align: center; }
     .empty h1 { font-size: clamp(28px, 5vw, 38px); margin-bottom: 12px; }
     .preset-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+    .preset-scope { font-size: 12px; margin-top: 14px; }
     .preset {
       background: var(--surface);
       border: 1px solid var(--line-strong);
@@ -385,6 +396,8 @@ const html = `<!doctype html>
               <select id="project" class="project" aria-label="대상 프로젝트"></select>
               <select id="type" aria-label="요청 종류">
                 <option value="auto">자동 판단</option>
+                <option value="studio_priorities">전체 Studio 우선순위</option>
+                <option value="studio_blockers">전체 Studio 막힌 프로젝트</option>
                 <option value="hermes_chat">Hermes 4.3 대화</option>
                 <option value="mac_status">Mac 상태</option>
                 <option value="deployment_status">배포 상태</option>
@@ -404,13 +417,14 @@ const html = `<!doctype html>
   </section>
   <script>
     const $ = (id) => document.getElementById(id);
-    const labels = { auto: "자동 판단", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
+    const labels = { auto: "자동 판단", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
+    const studioScopeTypes = new Set(["studio_priorities", "studio_blockers"]);
     const statusLabels = { queued: "대기 중", approval_required: "승인 필요", running: "실행 중", done: "완료", failed: "실패", canceled: "취소됨" };
     const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
     const verdictLabels = { allow: "허용", warn: "주의", block: "차단" };
     const presets = [
-      { id: "priorities", label: "오늘 우선순위", body: "{project}의 저장소와 배포 상태를 보고 오늘 우선순위를 정리해줘", type: "project_inspect" },
-      { id: "blocked", label: "막힌 프로젝트", body: "{project}가 막힌 곳이 있는지 저장소 상태를 점검해줘", type: "project_inspect" },
+      { id: "priorities", label: "오늘 우선순위", body: "전체 Hyphen Studio 프로젝트의 오늘 우선순위를 정리해줘", type: "studio_priorities" },
+      { id: "blocked", label: "막힌 프로젝트", body: "전체 Hyphen Studio에서 지금 막힌 프로젝트를 알려줘", type: "studio_blockers" },
       { id: "mac", label: "Mac 상태 점검", body: "Mac 상태를 점검해줘", type: "mac_status" },
       { id: "deploy", label: "배포 상태 확인", body: "배포 상태를 확인해줘", type: "deployment_status" },
     ];
@@ -483,6 +497,11 @@ const html = `<!doctype html>
     function esc(v) { return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
     function titleFrom(text) { return String(text || "새 요청").trim().replace(/\\s+/g, " ").slice(0, 56) || "새 요청"; }
     function assistantText(r) {
+      if (studioScopeTypes.has(r.resolved_type || r.type)) {
+        return r.status === "failed"
+          ? "사업 레지스트리를 지금 읽을 수 없습니다. 잠시 후 다시 시도해주세요."
+          : "전체 Hyphen Studio 사업 레지스트리에서 읽기 전용 브리핑을 만들었습니다.";
+      }
       if (r.status === "approval_required") return "변경이 필요한 작업으로 판단했습니다. 승인하기 전에는 아무것도 실행되지 않습니다.";
       if (r.status === "queued") return "요청을 큐에 넣었습니다. Mac Studio 워커가 곧 가져갑니다.";
       if (r.status === "running") return "Mac Studio에서 실행 중입니다.";
@@ -516,6 +535,9 @@ const html = `<!doctype html>
       if (capabilityGatedTypes.includes(type) && project && !capabilities.includes(type)) {
         el.textContent = capabilityGuidance[type] || capabilityGuidanceFallback;
         el.dataset.guide = "1";
+      } else if (studioScopeTypes.has(type)) {
+        el.textContent = "범위: 전체 Hyphen Studio · 읽기 전용 브리핑";
+        el.dataset.guide = "1";
       } else if (el.dataset.guide === "1") {
         el.textContent = "";
         delete el.dataset.guide;
@@ -524,9 +546,7 @@ const html = `<!doctype html>
     function applyPreset(id) {
       const preset = presets.find((item) => item.id === id);
       if (!preset) return;
-      const projectName = projectNames[$("project").value];
-      const scope = projectName ? "선택한 프로젝트 " + projectName : "선택한 프로젝트";
-      $("body").value = preset.body.replaceAll("{project}", scope);
+      $("body").value = preset.body;
       $("type").value = preset.type;
       if (preset.project && [...$("project").options].some((option) => option.value === preset.project)) $("project").value = preset.project;
       refreshPresetGuidance();
@@ -540,15 +560,17 @@ const html = `<!doctype html>
       if (!active) {
         $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>프로젝트를 고르고 자연스럽게 요청하면 Hermes가 Mac Studio에서 안전하게 처리합니다.</p><div class="preset-grid">' +
           presets.map((preset) => '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
-          '</div></div>';
+          '</div><p class="preset-scope">우선순위·막힌 프로젝트는 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
         return;
       }
       const events = (active.events || []).slice(-6).reverse().map((event) => '<div class="event"><span>' + esc(new Date(event.at).toLocaleTimeString()) + '</span><strong>' + esc(event.message) + '</strong></div>').join("");
-      const projectName = projectNames[active.target_project] || active.target_project || "";
+      const activeType = active.resolved_type || active.type;
+      const scope = studioScopeTypes.has(activeType) ? "전체 Hyphen Studio" : (projectNames[active.target_project] || active.target_project || "");
       $("messages").innerHTML = '<article class="message user"><div class="avatar">나</div><div class="bubble"><h2>' + esc(active.title) + '</h2><p>' + esc(active.body) + '</p></div></article>' +
-        '<article class="message assistant"><div class="avatar">H</div><div class="bubble"><h2>Hyphen Studio Agent</h2><p>' + esc(assistantText(active)) + '</p><div class="assistant-block"><div class="block-head"><span>' + esc(labels[active.resolved_type || active.type] || active.resolved_type || active.type) + (projectName ? ' · ' + esc(projectName) : '') + '</span><span class="status ' + active.status + '">' + esc(statusLabels[active.status] || active.status) + '</span></div>' +
+        '<article class="message assistant"><div class="avatar">H</div><div class="bubble"><h2>Hyphen Studio Agent</h2><p>' + esc(assistantText(active)) + '</p><div class="assistant-block"><div class="block-head"><span>' + esc(labels[activeType] || activeType) + (scope ? ' · ' + esc(scope) : '') + '</span><span class="status ' + active.status + '">' + esc(statusLabels[active.status] || active.status) + '</span></div>' +
         shadowPanel(active.system1_shadow) +
         (active.plan ? '<p class="progress-copy"><strong>판단:</strong> ' + esc(active.plan) + '</p>' : '') +
+        (active.briefing && active.briefing.updatedAt ? '<p class="progress-copy">소스 ' + esc(active.briefing.sourceLabel) + ' · 업데이트 ' + esc(active.briefing.updatedAt) + '</p>' : '') +
         (active.progress ? '<p class="progress-copy">' + esc(active.progress) + '</p>' : '') +
         (active.status === 'approval_required' ? '<p class="progress-copy">' + esc(approvalText(active)) + '</p>' : '') +
         (active.result ? '<pre>' + esc(active.result) + '</pre>' : '<pre>' + esc(new Date(active.updated_at).toLocaleString()) + '</pre>') +
@@ -742,6 +764,116 @@ async function computeSystem1Shadow(request, project) {
   }
 }
 
+let businessRegistryModule = null;
+let businessRegistryModuleFailed = false;
+
+async function loadBusinessRegistryModule() {
+  if (businessRegistryModule || businessRegistryModuleFailed) return businessRegistryModule;
+  try {
+    businessRegistryModule = await import("./scripts/hermes-business-registry.mjs");
+  } catch {
+    businessRegistryModuleFailed = true;
+  }
+  return businessRegistryModule;
+}
+
+const studioResultMaxItems = 8;
+const studioResultMaxBlockers = 3;
+const studioResultMaxChars = 4000;
+const studioSourceLabel = "전체 Studio 사업 레지스트리";
+const studioUnavailableMessage = "지금은 전체 Studio 사업 브리핑을 불러올 수 없습니다. 잠시 후 다시 시도해주세요.";
+const studioErrorCodes = new Set([
+  "registry_path_missing",
+  "registry_unreadable",
+  "registry_symlink",
+  "registry_not_regular",
+  "registry_too_large",
+  "registry_parse_error",
+  "schema_mismatch",
+  "source_hash_mismatch",
+  "registry_module_missing",
+  "registry_error",
+]);
+
+// Internal-only allowlisted failure code — never loader messages or paths.
+function studioErrorCode(error) {
+  const code = typeof error?.code === "string" ? error.code : "registry_error";
+  return studioErrorCodes.has(code) ? code : "registry_error";
+}
+
+// Bounded owner-facing rendering of one briefing section. Only registry-
+// derived Korean summaries, blocker descriptions, verification flags, coverage
+// counts, and safe source metadata — never raw registry JSON, evidence refs,
+// owner/contact names, paths, source filenames, or any source-hash material.
+function renderStudioView(view, items, briefing) {
+  const title = view === "priorities" ? "오늘 우선순위" : "막힌 프로젝트";
+  const lines = [
+    `전체 Hyphen Studio · ${title}`,
+    `소스: ${studioSourceLabel} · 업데이트 ${briefing.source.updatedAt}`,
+    `범위: hyphen 코어 ${briefing.coverage.hyphenCore}개 프로젝트 (제외 ${briefing.coverage.excluded}개)`,
+    "",
+  ];
+  if (items.length === 0) {
+    lines.push("근거 없음 — 입력 레지스트리에 해당 신호가 없습니다. 확인 필요.");
+  } else {
+    for (const [index, item] of items.slice(0, studioResultMaxItems).entries()) {
+      lines.push(`${index + 1}. ${item.projectName} — ${item.summary} · ${item.verified ? "근거 있음" : "확인 필요"}`);
+      if (view === "blockers") {
+        for (const blocker of (item.details?.blockers || []).slice(0, studioResultMaxBlockers)) {
+          const description = String(blocker.description || "").slice(0, 140);
+          lines.push(`   - ${description}${blocker.since ? ` (${blocker.since}~)` : ""}`);
+        }
+      }
+    }
+    if (items.length > studioResultMaxItems) lines.push(`… 외 ${items.length - studioResultMaxItems}개`);
+  }
+  lines.push(
+    "",
+    `미검증 현황: 상태 미상 ${briefing.coverage.statusUnknown}개 · 근거 미충족 ${briefing.coverage.evidenceUnverified}개 · owner 미지정 ${briefing.coverage.ownerMissing}개`,
+  );
+  return lines.join("\n").slice(0, studioResultMaxChars);
+}
+
+// Deterministic read-only Studio briefing, generated synchronously in the
+// server from the mounted business registry — never queued for the worker,
+// never needs approval, and stores only the bounded result plus safe metadata.
+async function runStudioBriefing(request) {
+  const view = studioViewByType[request.type] || "priorities";
+  const now = Date.now();
+  const finish = (status, result, briefing = null) => {
+    request.status = status;
+    request.result = result;
+    request.briefing = briefing;
+    request.progress = status === "done" ? "읽기 전용 Studio 브리핑을 만들었습니다." : "브리핑을 만들지 못했습니다.";
+    request.progress_step = status;
+    request.completed_at = now;
+    request.updated_at = now;
+  };
+  try {
+    const registryLib = await loadBusinessRegistryModule();
+    if (!registryLib) {
+      finish("failed", studioUnavailableMessage, { view, error: "registry_module_missing" });
+      addEvent(request, "브리핑 생성 실패");
+      return;
+    }
+    const { registry } = await registryLib.loadBusinessRegistry(businessRegistryFile, {
+      expectedHash: businessRegistryExpectedHash || undefined,
+    });
+    const briefing = registryLib.buildBusinessBriefing(registry);
+    const items = view === "blockers" ? briefing.sections.blocked : briefing.sections.topPriorities;
+    finish("done", renderStudioView(view, items, briefing), {
+      view,
+      sourceLabel: studioSourceLabel,
+      updatedAt: briefing.source.updatedAt,
+      itemCount: items.length,
+    });
+    addEvent(request, "Studio 브리핑 생성");
+  } catch (error) {
+    finish("failed", studioUnavailableMessage, { view, error: studioErrorCode(error) });
+    addEvent(request, "브리핑 생성 실패");
+  }
+}
+
 // Read-only traffic-coverage aggregate. totalEligibleRequests counts every
 // valid stored request; observedOk/observedError count requests carrying the
 // bounded system1_shadow marker (an error marker still counts as observed).
@@ -902,6 +1034,9 @@ createServer(async (req, res) => {
       if (system1ShadowEnabled) {
         request.system1_shadow = await computeSystem1Shadow(request, project);
       }
+      if (studioBriefingTypes.has(type)) {
+        await runStudioBriefing(request);
+      }
       await mutateStore((store) => store.requests.push(request));
       return send(res, 201, { request });
     }
@@ -942,11 +1077,18 @@ createServer(async (req, res) => {
     const retryMatch = url.pathname.match(/^\/api\/requests\/([^/]+)\/retry$/);
     if (retryMatch && req.method === "POST") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
-      const retried = await mutateStore((store) => {
+      const retried = await mutateStore(async (store) => {
         const item = store.requests.find(
           (request) => request.id === retryMatch[1] && ["failed", "canceled"].includes(request.status),
         );
         if (!item) return false;
+        if (studioBriefingTypes.has(item.type)) {
+          // Studio briefings regenerate synchronously in the server — they are
+          // never queued for the worker.
+          addEvent(item, "브리핑 재생성");
+          await runStudioBriefing(item);
+          return true;
+        }
         const risky = mutationTypes.has(item.resolved_type || item.type);
         item.status = risky ? "approval_required" : "queued";
         item.risk = risky ? "approval_required" : item.type === "auto" ? "pending" : "safe";
@@ -992,7 +1134,12 @@ createServer(async (req, res) => {
           request.claim_token = null;
           request.updated_at = now;
         }
-        const next = store.requests.filter((request) => request.status === "queued").sort((a, b) => a.created_at - b.created_at)[0];
+        // Studio briefings are generated in-server and must never reach a
+        // worker — exclude them explicitly even if a stale/corrupted record
+        // ever carries status "queued".
+        const next = store.requests
+          .filter((request) => request.status === "queued" && !studioBriefingTypes.has(request.type))
+          .sort((a, b) => a.created_at - b.created_at)[0];
         if (!next) return null;
         next.status = "running";
         next.claimed_at = now;

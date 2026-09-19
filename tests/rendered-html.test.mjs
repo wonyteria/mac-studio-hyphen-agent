@@ -119,14 +119,32 @@ test("empty-state presets only prefill and select existing request types", async
     assert.ok(html.includes(`label: "${label}"`), `missing preset ${label}`);
   }
   for (const [id, type] of [
-    ["priorities", "project_inspect"],
-    ["blocked", "project_inspect"],
+    ["priorities", "studio_priorities"],
+    ["blocked", "studio_blockers"],
     ["mac", "mac_status"],
     ["deploy", "deployment_status"],
   ]) {
     assert.match(html, new RegExp(`id: "${id}"[^\\n]*type: "${type}"`), `preset ${id} must map to ${type}`);
   }
-  assert.match(html, /\{project\}/, "priority/blocked presets must scope to the selected project");
+  // The cross-project presets scope to 전체 Hyphen Studio, not the selected
+  // repository: explicit allowlisted studio types, never project_inspect.
+  for (const id of ["priorities", "blocked"]) {
+    const line = html.match(new RegExp(`id: "${id}".*`, "g"));
+    assert.ok(line && !line[0].includes("project_inspect"), `preset ${id} must not use project_inspect`);
+  }
+  assert.match(html, /전체 Hyphen Studio/, "cross-project scope must be visible");
+  assert.match(html, /studioScopeTypes = new Set\(\["studio_priorities", "studio_blockers"\]\)/);
+  assert.match(html, /"전체 Hyphen Studio" : \(projectNames/, "block-head scope for studio types");
+  // The scope stays visible before submit (composer hint) and after submit
+  // (block-head), and no source-hash fingerprint is ever rendered.
+  assert.match(html, /범위: 전체 Hyphen Studio · 읽기 전용 브리핑/);
+  assert.match(html, /studioScopeTypes\.has\(type\)/);
+  assert.match(html, /esc\(active\.briefing\.sourceLabel\)/);
+  assert.equal(html.includes("sourceHashFingerprint"), false, "no fingerprint in the UI contract");
+  assert.equal(html.includes("지문"), false, "no fingerprint copy in the UI");
+  // Guidance is neutral-colored; real submit errors stay danger-colored.
+  assert.match(html, /\.error \{ color: var\(--danger\)/);
+  assert.match(html, /\.error\[data-guide="1"\] \{ color: var\(--muted\)/);
   const knownTypes = [
     "auto",
     "hermes_chat",
@@ -138,6 +156,8 @@ test("empty-state presets only prefill and select existing request types", async
     "file_cleanup",
     "development",
     "custom",
+    "studio_priorities",
+    "studio_blockers",
   ];
   for (const type of html.matchAll(/type: "([a-z_]+)"/g)) {
     assert.ok(knownTypes.includes(type[1]), `preset selects unknown type ${type[1]}`);
@@ -145,8 +165,7 @@ test("empty-state presets only prefill and select existing request types", async
   assert.match(html, /data-preset="/);
   const apply = html.match(/function applyPreset\(id\) \{[\s\S]*?\n {4}\}/);
   assert.ok(apply, "applyPreset missing");
-  assert.match(apply[0], /\$\("body"\)\.value = preset\.body\.replaceAll\("\{project\}"/);
-  assert.match(apply[0], /projectNames\[\$\("project"\)\.value\]/);
+  assert.match(apply[0], /\$\("body"\)\.value = preset\.body;/);
   assert.match(apply[0], /\$\("type"\)\.value = preset\.type/);
   for (const submission of ["requestSubmit", "fetch(", "api(", "submit("]) {
     assert.equal(apply[0].includes(submission), false, `preset path may auto-submit via ${submission}`);

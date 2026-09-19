@@ -44,9 +44,14 @@ Only `organization === "hyphen"` enters the core briefing. Other organizations (
 
 `buildBusinessBriefing` and `renderBriefingMarkdown` are pure: identical input bytes produce identical JSON and markdown. The only timestamps in the output come from the payload itself (`updatedAt`, `checkedAt`); nothing reads the wall clock.
 
-## Surface: CLI/library only
+## Surface: CLI plus bounded mini-server connector
 
-The briefing is a CLI and library surface only. The production Docker image ships `mini-server.mjs` and `hermes-projects.json` but not `scripts/` or the Studio export, so no mini-server route exists — adding one would always fail. Any future HTTP surface must solve that distribution first instead of shipping a permanently unavailable endpoint.
+Two surfaces consume this module:
+
+1. **CLI** — `scripts/hermes-business-briefing.mjs` renders the full briefing locally.
+2. **Mini-server** — `mini-server.mjs` imports `scripts/hermes-business-registry.mjs` (shipped in the Docker image) and generates the `priorities`/`blockers` views synchronously for the `studio_priorities`/`studio_blockers` request types. The result stored on the request is a bounded Korean owner-facing rendering — project names, Korean summaries, blocker descriptions, verification flags, coverage counts, a generic source label, and `updatedAt` — never the raw briefing object, evidence refs, owner names, paths, loader messages, or any source-hash material. On failure only a bounded allowlisted error code is persisted internally; the owner-facing state stays generic.
+
+The private Studio export is **never embedded in the image**. The server resolves it only from `HERMES_BUSINESS_REGISTRY` (default `/app/var/business/registry.private.json`), with optional `HERMES_BUSINESS_REGISTRY_EXPECTED_HASH` drift pinning. Operators mount the export read-only into the runtime; when the file is absent or invalid the request completes as `failed` with a neutral unavailable state, not a fabricated empty briefing. Studio requests never enter the worker queue or the approval path.
 
 ## Future input boundary
 
