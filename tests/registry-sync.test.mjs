@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { after, before } from "node:test";
@@ -12,6 +12,7 @@ import {
   buildSyncStatus,
   parseSyncStatusDocument,
 } from "../scripts/hermes-business-registry.mjs";
+import { writeAtomicMode } from "../scripts/hermes-registry-sync.mjs";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const syncScript = join(repoRoot, "scripts", "hermes-registry-sync.mjs");
@@ -149,6 +150,7 @@ test("an invalid source is rejected and the last-good destination is preserved",
   const run = runCli(syncArgs());
   await writeSource(); // restore the fixture before asserting anything
   assert.equal(run.status, 1, run.stderr);
+  assert.equal(run.stderr.includes(workDir), false, "sync failure output must not leak paths");
   assert.equal(await readFile(destFile, "utf8"), good, "last-known-good must survive a failed run");
   const status = await readStatusDoc();
   assert.equal(status.status, "error");
@@ -328,6 +330,19 @@ test("parseSyncStatusDocument enforces the allowlist strictly", () => {
   assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, projectCount: -1 })), null);
   assert.equal(parseSyncStatusDocument("{ not json"), null);
   assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, checkedAt: "not a date" })), null);
+
+  // Status invariants: error requires an allowlisted code; success requires
+  // errorCode null plus complete last-good evidence.
+  const errored = { ...good, status: "error", errorCode: "schema_mismatch" };
+  assert.deepEqual(parseSyncStatusDocument(JSON.stringify(errored)), errored);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, status: "error" })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, status: "error", errorCode: null })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, status: "error", errorCode: "ENOENT: /tmp/x" })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, errorCode: "sync_error" })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, syncedAt: null })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, registryUpdatedAt: null })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, projectCount: null })), null);
+  assert.equal(parseSyncStatusDocument(JSON.stringify({ ...good, status: "unchanged", errorCode: "sync_error" })), null);
 });
 
 test("businessRegistryFreshness classifies fresh, stale, and unavailable", () => {
@@ -355,4 +370,121 @@ test("businessRegistryFreshness classifies fresh, stale, and unavailable", () =>
     businessRegistryFreshness({ registry: { updatedAt: "2026-09-20" }, status: fresh, now }),
     "stale",
   );
+  // A checkedAt beyond the allowed clock skew must not stay fresh forever.
+  assert.equal(
+    businessRegistryFreshness({ registry, status: { ...fresh, checkedAt: "2026-09-19T12:10:00Z" }, now }),
+    "stale",
+  );
+  // Within the skew tolerance, a slightly future timestamp is still trusted.
+  assert.equal(
+    businessRegistryFreshness({ registry, status: { ...fresh, checkedAt: "2026-09-19T12:03:00Z" }, now }),
+    "fresh",
+  );
+});
+
+test("non-ENOENT I/O errors fail closed with bounded, path-free output", async () => {
+  const nopermDir = join(workDir, "noperm");
+  await mkdir(nopermDir);
+  await chmod(nopermDir, 0o000);
+  const run = runCli(["sync", "--source", sourceFile, "--destination", join(nopermDir, "registry.private.json")]);
+  try {
+    assert.equal(run.status, 2, `expected exit 2, got ${run.status}: ${run.stderr}`);
+    assert.equal(run.stderr.includes(workDir), false, "sync logs must never leak local paths");
+    assert.match(run.stderr, /status 기록에 실패했습니다 \[sync_error\]/);
+    assert.match(run.stderr, /동기화를 거부했습니다 \[sync_error\]/);
+  } finally {
+    await chmod(nopermDir, 0o755);
+  }
+  assert.deepEqual(await readdir(nopermDir), [], "no lock or temp file residue may remain");
+});
+
+test("an unreadable destination fails closed and is never overwritten", async () => {
+  const permDestDir = join(workDir, "perm-dest");
+  const permDest = join(permDestDir, "registry.private.json");
+  const ok = runCli(["sync", "--source", sourceFile, "--destination", permDest]);
+  assert.equal(ok.status, 0, ok.stderr);
+  await chmod(permDest, 0o000);
+  const run = runCli(["sync", "--source", sourceFile, "--destination", permDest]);
+  try {
+    assert.equal(run.status, 1, run.stderr);
+    assert.equal(run.stderr.includes(workDir), false, "bounded output must not leak paths");
+    const status = JSON.parse(await readFile(join(permDestDir, SYNC_STATUS_FILENAME), "utf8"));
+    assert.equal(status.errorCode, "destination_unreadable");
+  } finally {
+    await chmod(permDest, 0o600);
+  }
+  const parsed = JSON.parse(await readFile(permDest, "utf8"));
+  assert.equal(parsed.projects[0].id, "alpha", "an uninspectable destination was never replaced");
+});
+
+test("a status write failure exits 2 with bounded, path-free output", async () => {
+  const okDest = join(workDir, "ok-dest", "registry.private.json");
+  const roStatusDir = join(workDir, "ro-status");
+  await mkdir(roStatusDir);
+  await chmod(roStatusDir, 0o555);
+  const run = runCli([
+    "sync", "--source", sourceFile, "--destination", okDest,
+    "--status", join(roStatusDir, "s.json"),
+  ]);
+  try {
+    assert.equal(run.status, 2, run.stderr);
+    assert.equal(run.stderr.includes(workDir), false);
+    assert.match(run.stderr, /status 기록에 실패했습니다 \[/);
+  } finally {
+    await chmod(roStatusDir, 0o755);
+  }
+  assert.deepEqual(await readdir(roStatusDir), [], "a failed status write must leave no temp file");
+});
+
+test("writeAtomicMode leaves no temp file and preserves the target on failure", async () => {
+  const roDir = join(workDir, "ro-atomic");
+  await mkdir(roDir);
+  const target = join(roDir, "registry.private.json");
+  await writeFile(target, "last-good", "utf8");
+  await chmod(roDir, 0o555);
+  try {
+    await assert.rejects(writeAtomicMode(target, "new-content", 0o600));
+    assert.deepEqual(await readdir(roDir), ["registry.private.json"], "no temp fragment may remain");
+  } finally {
+    await chmod(roDir, 0o755);
+  }
+  assert.equal(await readFile(target, "utf8"), "last-good", "target must survive a failed atomic write");
+});
+
+test("writeAtomicMode cleans the temp file when rename fails", async () => {
+  const clashDir = join(workDir, "atomic-clash");
+  await mkdir(clashDir);
+  const destAsDir = join(clashDir, "target");
+  await mkdir(destAsDir);
+  await writeFile(join(destAsDir, "keep"), "x", "utf8"); // non-empty dir defeats rename
+  await assert.rejects(writeAtomicMode(destAsDir, "x"));
+  assert.deepEqual(await readdir(clashDir), ["target"], "temp must be removed after a failed rename");
+  assert.equal(await readFile(join(destAsDir, "keep"), "utf8"), "x", "the clashing entry is untouched");
+});
+
+test("writeAtomicMode succeeds with the requested mode and no residue", async () => {
+  const dir = join(workDir, "atomic-ok");
+  await mkdir(dir);
+  const target = join(dir, "f.json");
+  await writeAtomicMode(target, "v1", 0o600);
+  assert.equal(await readFile(target, "utf8"), "v1");
+  assert.equal((await stat(target)).mode & 0o777, 0o600);
+  assert.deepEqual(await readdir(dir), ["f.json"], "no temp file may remain after success");
+});
+
+test("uninstall reports whether the plist actually existed", async () => {
+  const fakeHome = join(workDir, "fake-home");
+  const plistDir = join(fakeHome, "Library", "LaunchAgents");
+  await mkdir(plistDir, { recursive: true });
+  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/bin/false" };
+  const absent = runCli(["uninstall"], env);
+  assert.equal(absent.status, 0, absent.stderr);
+  assert.match(absent.stdout, /plist가 없습니다/);
+  assert.equal(absent.stdout.includes("제거했습니다"), false);
+  const plistPath = join(plistDir, "com.hyphen.hermes-registry-sync.plist");
+  await writeFile(plistPath, "<plist/>", "utf8");
+  const removed = runCli(["uninstall"], env);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.match(removed.stdout, /plist를 제거했습니다/);
+  assert.equal(await lstat(plistPath).catch(() => null), null, "the plist must actually be gone");
 });

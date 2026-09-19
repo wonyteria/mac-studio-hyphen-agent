@@ -58,6 +58,9 @@ command:
   --json                 sync 결과를 JSON으로 출력
   --help                 이 도움말
 
+환경 변수: HERMES_REGISTRY_SYNC_LAUNCHCTL로 launchctl 실행 파일을 바꿀 수
+있습니다 (테스트/샌드박스용, 기본 launchctl).
+
 동작 규칙:
   - 소스/대상 모두 symlink를 거부하고, 크기·스키마·sourceHash를 검증합니다.
   - 대상은 같은 디렉터리의 temp 파일 + fsync + rename으로만 교체합니다 (0600).
@@ -149,19 +152,25 @@ function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
 
+// Missing is the only benign answer — permission and other I/O errors must
+// fail closed rather than masquerade as "file absent".
 async function lstatOrNull(path) {
   try {
     return await lstat(path);
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
   }
 }
 
+// The previous status document is a hint, never authoritative — any problem
+// reading it (absent, symlinked, unreadable, malformed) degrades to null and
+// the run simply records fresh status at the end.
 async function readStatusFile(statusPath) {
   if (!statusPath) return null;
-  const info = await lstatOrNull(statusPath);
-  if (!info || info.isSymbolicLink() || !info.isFile()) return null;
   try {
+    const info = await lstatOrNull(statusPath);
+    if (!info || info.isSymbolicLink() || !info.isFile()) return null;
     return parseSyncStatusDocument(await readFile(statusPath, "utf8"));
   } catch {
     return null;
@@ -170,24 +179,32 @@ async function readStatusFile(statusPath) {
 
 // Atomic write: temp file in the target directory, fsync, then rename so a
 // reader never sees a partial document. Mode is applied to the temp file
-// before the rename lands.
+// before the rename lands; any failure removes the temp file best-effort so
+// no mode-0600 fragment is left behind.
 async function writeAtomicMode(filePath, contents, mode = 0o600) {
   const temporary = `${filePath}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
-  const handle = await open(temporary, "w", mode);
   try {
-    await handle.writeFile(contents);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    const handle = await open(temporary, "w", mode);
+    try {
+      await handle.writeFile(contents);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, filePath);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
   }
-  await rename(temporary, filePath);
   // Best-effort directory fsync so the rename itself is durable.
+  let dir = null;
   try {
-    const dir = await open(dirname(filePath), "r");
+    dir = await open(dirname(filePath), "r");
     await dir.sync();
-    await dir.close();
   } catch {
     // Some filesystems cannot fsync directories; the rename already landed.
+  } finally {
+    if (dir) await dir.close().catch(() => {});
   }
 }
 
@@ -232,7 +249,12 @@ async function releaseLock(lockPath) {
 
 async function ensureDestinationDir(destination, { create = true } = {}) {
   const parent = dirname(destination);
-  const info = await lstatOrNull(parent);
+  let info;
+  try {
+    info = await lstatOrNull(parent);
+  } catch {
+    throw new SyncError("destination_dir_unusable", "대상 디렉터리 상태를 확인할 수 없습니다.");
+  }
   if (info && (info.isSymbolicLink() || !info.isDirectory())) {
     throw new SyncError("destination_dir_unusable", "대상 디렉터리가 일반 디렉터리가 아닙니다.");
   }
@@ -266,7 +288,12 @@ async function loadSourceRegistry(paths, options) {
 }
 
 async function destinationNeedsUpdate(paths, raw) {
-  const info = await lstatOrNull(paths.destination);
+  let info;
+  try {
+    info = await lstatOrNull(paths.destination);
+  } catch {
+    throw new SyncError("destination_unreadable", "대상 파일 상태를 확인할 수 없습니다.");
+  }
   if (!info) return { write: true, reason: "missing" };
   if (info.isSymbolicLink()) {
     throw new SyncError("destination_symlink", "대상이 symlink입니다. 자동 교체하지 않습니다.");
@@ -274,8 +301,15 @@ async function destinationNeedsUpdate(paths, raw) {
   if (!info.isFile()) {
     throw new SyncError("destination_not_regular", "대상이 일반 파일이 아닙니다.");
   }
-  const current = await readFile(paths.destination, "utf8").catch(() => null);
-  if (current !== null && sha256(current) === sha256(raw)) return { write: false, reason: "identical" };
+  // An unreadable destination is never treated as "changed": overwriting a
+  // file we cannot inspect would destroy data we failed to verify.
+  let current;
+  try {
+    current = await readFile(paths.destination, "utf8");
+  } catch {
+    throw new SyncError("destination_unreadable", "대상 파일을 읽을 수 없습니다.");
+  }
+  if (sha256(current) === sha256(raw)) return { write: false, reason: "identical" };
   return { write: true, reason: "changed" };
 }
 
@@ -306,7 +340,7 @@ async function syncPass(paths, options) {
   }
   if (!options.dryRun) {
     await writeAtomicMode(paths.destination, raw, 0o600).catch((error) => {
-      throw new SyncError("write_failed", `대상 쓰기에 실패했습니다: ${error?.code || error}`);
+      throw new SyncError("write_failed", `대상 쓰기에 실패했습니다 [${String(error?.code || "io_error")}]`);
     });
     await chmod(paths.destination, 0o600).catch(() => {});
   }
@@ -319,19 +353,21 @@ function statusKorean(status) {
 
 async function runSyncCommand(paths, options) {
   const dry = Boolean(options.dryRun);
-  if (!dry) {
-    // The lock lives next to the destination, so the directory must exist
-    // first. A failure here escapes before any status write is possible.
-    await ensureDestinationDir(paths.destination);
-    const acquired = await acquireLock(paths.lockPath);
-    if (!acquired) {
-      console.log("다른 동기화 실행이 진행 중입니다 — 이번 실행은 건너뜁니다.");
-      return 0;
-    }
-  }
-  let doc;
+  let locked = false;
+  let doc = null;
   let failed = null;
   try {
+    if (!dry) {
+      // The lock lives next to the destination, so the directory must exist
+      // first. Every failure in this command lands in the same bounded error
+      // path — sync output never carries paths or raw error messages.
+      await ensureDestinationDir(paths.destination);
+      locked = await acquireLock(paths.lockPath);
+      if (!locked) {
+        console.log("다른 동기화 실행이 진행 중입니다 — 이번 실행은 건너뜁니다.");
+        return 0;
+      }
+    }
     doc = await syncPass(paths, options);
   } catch (error) {
     failed = error;
@@ -345,7 +381,7 @@ async function runSyncCommand(paths, options) {
       errorCode: syncErrorCode(error),
     });
   } finally {
-    if (!dry) await releaseLock(paths.lockPath);
+    if (locked) await releaseLock(paths.lockPath);
   }
 
   if (dry) {
@@ -361,14 +397,17 @@ async function runSyncCommand(paths, options) {
     return 0;
   }
 
-  // The error record itself is part of the contract: try hard to persist it,
-  // but never include paths/messages — only the bounded errorCode.
-  let statusFailed = false;
+  // The error record itself is part of the contract: try hard to persist it.
+  // Reporting stays bounded — a status write failure is still only a code.
+  let statusError = null;
   await writeStatus(paths, doc).catch((error) => {
-    statusFailed = true;
-    console.error(`status 기록에 실패했습니다: ${error?.code || error}`);
+    statusError = error;
   });
-  if (statusFailed) return 2;
+  if (statusError) {
+    console.error(`status 기록에 실패했습니다 [${syncErrorCode(statusError)}]`);
+    if (failed) console.error(`동기화를 거부했습니다 [${doc.errorCode}]`);
+    return 2;
+  }
   if (failed) {
     console.error(`동기화를 거부했습니다 [${doc.errorCode}]`);
     return 1;
@@ -436,8 +475,12 @@ function plistTargetPath() {
   return join(homedir(), "Library", "LaunchAgents", plistFileName);
 }
 
+// launchctl is invoked only from the explicit install/uninstall/status
+// commands; the binary can be overridden for sandboxed testing.
+const launchctlBin = process.env.HERMES_REGISTRY_SYNC_LAUNCHCTL || "launchctl";
+
 function launchctl(args) {
-  return spawnSync("launchctl", args, { encoding: "utf8" });
+  return spawnSync(launchctlBin, args, { encoding: "utf8" });
 }
 
 function guiDomain() {
@@ -494,8 +537,9 @@ async function runUninstall(options) {
     }
     console.log("LaunchAgent를 해제했습니다.");
   }
-  const removed = await rm(target, { force: true }).then(() => true).catch(() => false);
-  console.log(removed ? `plist를 제거했습니다: ${target}` : `plist가 없습니다: ${target}`);
+  const existed = Boolean(await lstatOrNull(target));
+  if (existed) await rm(target, { force: true });
+  console.log(existed ? `plist를 제거했습니다: ${target}` : `plist가 없습니다: ${target}`);
   return 0;
 }
 
@@ -560,8 +604,12 @@ async function main() {
       process.exitCode = await runStatus(paths);
     }
   } catch (error) {
-    // Command-level failures: bounded code + generic message only.
-    console.error(`실패 [${syncErrorCode(error)}]: ${error instanceof Error ? error.message : error}`);
+    if (options.command === "sync") {
+      // sync must never leak paths or raw messages into launchd logs.
+      console.error(`동기화를 거부했습니다 [${syncErrorCode(error)}]`);
+    } else {
+      console.error(`실패 [${syncErrorCode(error)}]: ${error instanceof Error ? error.message : error}`);
+    }
     process.exitCode = 2;
   }
 }
@@ -579,4 +627,5 @@ export {
   parseArgs,
   resolveSyncPaths,
   runSyncCommand,
+  writeAtomicMode,
 };

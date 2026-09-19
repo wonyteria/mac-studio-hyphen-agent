@@ -410,10 +410,14 @@ export const SYNC_ERROR_CODES = new Set([
   "source_hash_mismatch",
   "destination_symlink",
   "destination_not_regular",
+  "destination_unreadable",
   "destination_dir_unusable",
   "write_failed",
   "sync_error",
 ]);
+// checkedAt may sit slightly in the future under normal clock drift; beyond
+// this tolerance a "fresh" claim from the future is not trusted.
+export const SYNC_MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 // Maps any thrown error to a bounded status errorCode. Unknown errors collapse
 // to "sync_error"; messages and paths are dropped here.
@@ -456,6 +460,14 @@ export function parseSyncStatusDocument(raw, { maxBytes = SYNC_STATUS_MAX_BYTES 
     return null;
   }
   if (doc.errorCode !== null && !SYNC_ERROR_CODES.has(doc.errorCode)) return null;
+  // Cross-field invariants: an error record must name a bounded code, and a
+  // success record must carry the full freshness evidence — partial or
+  // contradictory documents are never trusted.
+  if (doc.status === "error") {
+    if (doc.errorCode === null) return null;
+  } else if (doc.errorCode !== null || doc.syncedAt === null || doc.registryUpdatedAt === null || doc.projectCount === null) {
+    return null;
+  }
   return doc;
 }
 
@@ -468,12 +480,13 @@ export function parseSyncStatusDocument(raw, { maxBytes = SYNC_STATUS_MAX_BYTES 
 //                 checking in (checkedAt older than staleMs), or the status
 //                 no longer describes the destination's content.
 //   fresh       — registry loads and a recent successful run confirms it.
-export function businessRegistryFreshness({ registry = null, status = null, now = Date.now(), staleMs = 10 * 60 * 1000 } = {}) {
+export function businessRegistryFreshness({ registry = null, status = null, now = Date.now(), staleMs = 10 * 60 * 1000, maxFutureSkewMs = SYNC_MAX_CLOCK_SKEW_MS } = {}) {
   if (!registry) return "unavailable";
   if (!status) return "stale";
   if (status.status === "error") return "stale";
   const checkedAt = Date.parse(status.checkedAt);
   if (!Number.isFinite(checkedAt) || now - checkedAt > staleMs) return "stale";
+  if (checkedAt - now > maxFutureSkewMs) return "stale";
   if (status.registryUpdatedAt && status.registryUpdatedAt !== registry.updatedAt) return "stale";
   return "fresh";
 }
