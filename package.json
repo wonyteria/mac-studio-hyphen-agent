@@ -1,0 +1,56 @@
+{
+  "name": "hermes-mac-ops-console",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
+    "test": "npm run test:runtime && npm run build",
+    "test:runtime": "node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs",
+    "eval:system1": "node scripts/hermes-system1-eval.mjs",
+    "eval:system1:json": "node scripts/hermes-system1-eval.mjs --format json",
+    "briefing": "node scripts/hermes-business-briefing.mjs",
+    "briefing:json": "node scripts/hermes-business-briefing.mjs --format json",
+    "backup:inventory": "node scripts/hermes-backup-readiness.mjs inventory",
+    "backup:verify": "node scripts/hermes-backup-readiness.mjs verify",
+    "backup:restore-plan": "node scripts/hermes-backup-readiness.mjs restore-plan",
+    "test:react": "npm run build",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@eslint/js": "9.39.4",
+    "@next/eslint-plugin-next": "16.2.6",
+    "@openai/sites-vite-plugin": "0.1.0",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.4",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "16.4.0",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.59.3",
+    "vinext": "1.0.0-beta.2",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module"
+}

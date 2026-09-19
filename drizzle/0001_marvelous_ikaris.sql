@@ -1,0 +1,1 @@
+CREATE INDEX `idx_ops_requests_status_updated` ON `ops_requests` (`status`,`updated_at`);

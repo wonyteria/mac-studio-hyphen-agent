@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "hermes-backup-manifest",
+  "manifestId": "mac-studio-ops-boundary",
+  "updatedAt": "2026-09-19",
+  "bounds": {
+    "maxSources": 32,
+    "maxEntriesPerSource": 4000,
+    "maxDepth": 6,
+    "maxHashFileBytes": 33554432
+  },
+  "sources": [
+    {
+      "id": "hermes-projects-registry",
+      "type": "file",
+      "path": "~/Documents/Hyphen Source Repositories/Hyphen-Hermes-Ops/hermes-projects.json",
+      "label": "Hermes 배포 레지스트리 소스 원본",
+      "required": true
+    },
+    {
+      "id": "hermes-runtime",
+      "type": "directory",
+      "path": "~/.local/share/hermes-ops",
+      "label": "Hermes worker 런타임 (큐, 잠금, 저널, persistence 백업)",
+      "required": true,
+      "recursive": true,
+      "maxDepth": 5,
+      "maxEntries": 2000,
+      "hashFiles": false,
+      "exclude": ["worktrees"]
+    },
+    {
+      "id": "mini-vercel-data",
+      "type": "directory",
+      "path": "~/Library/Application Support/Hyphen/mini-vercel",
+      "label": "mini deploy 데이터 볼륨 (라우트, 배포 메타데이터, 로컬 db 스냅샷)",
+      "required": true,
+      "recursive": true,
+      "maxDepth": 3,
+      "maxEntries": 3000,
+      "hashFiles": false,
+      "exclude": [
+        "logs",
+        "deployments",
+        "backups",
+        "codex-festival29",
+        "venv",
+        "runner-workspaces",
+        "app/node_modules",
+        "app/.omx",
+        "app/.pytest_cache",
+        "app/codex-plugin",
+        "app/sdk",
+        "app/tests",
+        "app/tools"
+      ]
+    },
+    {
+      "id": "mini-vercel-platform-db",
+      "type": "sqlite",
+      "path": "~/Library/Application Support/Hyphen/mini-vercel/platform.db",
+      "label": "mini deploy control-plane SQLite 데이터베이스",
+      "required": true,
+      "sqlite": {
+        "consistency": "online-backup",
+        "strategy": "SQLite online backup API(sqlite3 'platform.db' '.backup <file>')로 writer 동작 중 일관된 산출물을 만든다. -wal이 살아 있는 동안 .db 파일을 그대로 복사하지 않는다. quiesce가 필요하면 운영자가 com.hyphen.mini-vercel을 중지한 뒤 -wal/-shm이 사라졌는지 확인하고 파일 세트를 복사한다."
+      }
+    },
+    {
+      "id": "project-auto-backup-mirror",
+      "type": "directory",
+      "path": "~/Library/Application Support/Hyphen/project-auto-backup",
+      "label": "중앙 백업 로컬 미러 (wonyteria/project-auto-backup, mirror/desktop-projects)",
+      "required": false,
+      "recursive": true,
+      "maxDepth": 2,
+      "maxEntries": 1000,
+      "hashFiles": false,
+      "exclude": [".git"]
+    }
+  ],
+  "targets": [
+    {
+      "id": "time-machine",
+      "type": "time-machine",
+      "location": "/Volumes/My Passport 1",
+      "notes": "'My Passport' USB 디스크 (~1.8 TB). 2026-09-19 기준 설정됨·당일 스냅샷 확인. 세 분류 경로와 Hermes 소스 체크아웃, mini-vercel 데이터가 제외 목록에 없음."
+    },
+    {
+      "id": "project-mirror-backups",
+      "type": "git-mirror",
+      "location": "~/Library/Application Support/Hyphen/project-auto-backup",
+      "notes": "wonyteria/project-auto-backup 의 mirror/desktop-projects 브랜치 + 프로젝트별 *-Backup 레포의 mirror/project-sources. GitHub pushed state만 모으므로 로컬 미커밋 파일은 포함하지 않는다."
+    },
+    {
+      "id": "mini-vercel-local-snapshots",
+      "type": "directory",
+      "location": "~/Library/Application Support/Hyphen/mini-vercel",
+      "notes": "mini deploy가 남긴 platform.db.backup-*/platform.db.bak-* 스냅샷 파일들. 시점이 제각각이므로 복원 시 wal/shm 세트 정합성을 별도 확인해야 한다."
+    }
+  ],
+  "adapters": [
+    {
+      "id": "time-machine",
+      "type": "time-machine",
+      "enabled": true,
+      "label": "Time Machine destination (tmutil destinationinfo)"
+    },
+    {
+      "id": "project-mirror-backups",
+      "type": "launchd",
+      "job": "com.hyphen.project-mirror-backups",
+      "enabled": true,
+      "label": "프로젝트별 Backup 미러 작업 (10분 주기, 읽기 전용 상태만 확인)"
+    },
+    {
+      "id": "mini-vercel-writer",
+      "type": "launchd",
+      "job": "com.hyphen.mini-vercel",
+      "enabled": true,
+      "label": "platform.db writer 서비스 상태 (quiesce 판단용)"
+    },
+    {
+      "id": "project-auto-backup-mirror",
+      "type": "path",
+      "path": "~/Library/Application Support/Hyphen/project-auto-backup",
+      "enabled": true,
+      "label": "중앙 백업 로컬 미러 존재 여부"
+    }
+  ]
+}
