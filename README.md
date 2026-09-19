@@ -1,12 +1,14 @@
 # Hermes Mac Ops Console
 
-Hermes is an internal Korean-first chat console for operating the Mac Studio deployment server without opening remote desktop.
+The **Hyphen Studio Agent** — an internal Korean-first chat console, powered by Hermes, for operating the Mac Studio deployment server without opening remote desktop. Hyphen Studio is the project cockpit; this agent is the execution and evidence surface.
 
 The production deployment at `https://hermes.hyphen.it.com` currently runs the compact Node runtime in `mini-server.mjs` through the Mac Studio mini deploy service. The React/vinext app files remain in the repository, but the Docker production path uses `Dockerfile` plus `mini-server.mjs`.
 
 ## Current Capabilities
 
-- password-protected internal chat UI
+- password-protected internal chat UI branded as the Hyphen Studio Agent workspace
+- empty-state action presets (오늘 우선순위 / 막힌 프로젝트 / Mac 상태 점검 / 배포 상태 확인) that only prefill the composer — never auto-submit or bypass approval; the priority/blocked presets run `project_inspect` on the currently selected project only, and the composer warns with type-specific Korean guidance when the selected project lacks the required capability (the backend gate still decides)
+- truthful connection indicator driven by real API results, plus visible project context on the active request
 - request queue persisted to the mini deploy data volume
 - local LaunchAgent worker polling the queue from the Mac Studio
 - on-demand local Hermes 4.3 chat with a memory-balanced 16K context and short idle retention
@@ -66,7 +68,7 @@ HERMES_BUSINESS_REGISTRY=/path/registry.private.json npm run briefing
 node scripts/hermes-business-briefing.mjs --expect-hash <sha256>
 ```
 
-The input resolves from `--registry`, then `HERMES_BUSINESS_REGISTRY`, then the sibling `../Hyphen-Studio/outputs/registry.private.json` checkout. Symlinked, oversized, malformed, schema-mismatched, or hash-drifted inputs fail closed with exit 2. The input contract, ranking and tie-break rules, and the adapter boundary for future producers are documented in `BRIEFING.md`. This registry is unrelated to `hermes-projects.json` — it carries business facts, not deployment capabilities. The production Docker image does not ship the business-briefing modules or the Studio export — `scripts/hermes-system1.mjs` is the only shipped script — so the briefing is a CLI/library surface only, with no mini-server endpoint.
+The input resolves from `--registry`, then `HERMES_BUSINESS_REGISTRY`, then the sibling `../Hyphen-Studio/outputs/registry.private.json` checkout. Symlinked, oversized, malformed, schema-mismatched, or hash-drifted inputs fail closed with exit 2. The input contract, ranking and tie-break rules, and the adapter boundary for future producers are documented in `BRIEFING.md`. This registry is unrelated to `hermes-projects.json` — it carries business facts, not deployment capabilities. The production Docker image does not ship the business-briefing modules or the Studio export — `scripts/hermes-system1.mjs` is the only shipped script — so the briefing is a CLI/library surface only, with no mini-server endpoint. A cross-project Studio business briefing inside the agent workspace is a later connector stage, not a current capability — the workspace presets stay scoped to the selected project.
 
 ## Backup Readiness
 
@@ -95,6 +97,10 @@ node scripts/hermes-system1-eval.mjs --adapters baseline,fixture   # subset sele
 The CLI evaluates a deterministic baseline adapter, a fixture-probability mock, and a Jev **contract probe** (injectable transport, always-offline — no API key, SDK, or real request) against the labeled Korean synthetic corpus `eval/system1-corpus.json`. Reports include route accuracy, false-auto rate (must be zero on protected cases), abstention rate, judge accuracy, gate-precedence overrides, Brier calibration where probabilities exist, and `not_measured_offline` latency/cost placeholders. Adoption gates fail closed: exit `1` when any evaluated adapter fails (false-auto on protected/high-risk cases must be zero before any live pilot), `2` on argument/corpus rejection, `0` when all evaluated adapters pass. Provider inputs are an allowlisted feature object only — fixed-enum task categories, risk flags, capability requirements, ambiguity/evidence counts — derived by local deterministic preprocessing; raw request text, raw business content, absolute private paths, secret-like fields/values, raw file contents, and env contents never cross the boundary or reach evaluation reports. The intended flow, Jev adapter contract, evaluation limits, and staged adoption (offline corpus → shadow mode → limited low-risk pilot → broader use) are documented in `SYSTEM1.md`. Jev is **not** integrated and this layer is not production-ready.
 
 **Shadow mode (local instrumentation only).** Setting `HERMES_SYSTEM1_SHADOW=1` on the mini-server makes `POST /api/requests` additionally run `routeWithPolicy()` with the deterministic baseline **after** validation/classification and persist a bounded `system1_shadow` record on the stored request: schema/version, `observed_at`, final route, `determinedBy`, policy verdict, confidence/abstain status, and the allowlisted feature/risk data only. It never changes `type`, `resolved_type`, `risk`, `status`, approval gates, worker dispatch, or execution, and never persists provider payloads, probabilities, raw text, explanations, secret-like values, env values, or absolute paths. Any shadow failure degrades to a fixed `status: "error"` enum marker and cannot affect request creation. Default off = legacy behavior with no field. No external calls, no credentials — see `SYSTEM1.md` for the full non-interference and privacy contract.
+
+In the workspace UI, a stored `system1_shadow` with `status: "ok"` renders a compact Korean `빠른 판단` panel (route, policy verdict, confidence) labeled `관찰 전용 · 실행에 영향 없음`; an `error` record shows only a neutral unavailable state. Raw features, reasons, source text, paths, and provider data are never rendered.
+
+`GET /api/system1/summary` is an admin-only, read-only traffic-coverage aggregate. It returns a strict count allowlist — kind/schema, `totalEligibleRequests` (every valid stored request), `observedOk`/`observedError` (requests carrying the bounded `system1_shadow` marker — an error marker still counts as observed), route counts, policy verdict counts, and abstained count (status `ok` records only), plus `coverageRate` = (`observedOk` + `observedError`) / `totalEligibleRequests`, or `0` when there are no eligible requests — with no request ids, titles, bodies, results, events, timestamps, features, or paths, and makes no external calls. The workspace shows a small evidence summary only when records exist.
 
 ```text
 ~/Documents/Hyphen Source Repositories/<RepoName>   # canonical source checkouts (e.g. Hyphen-Hermes-Ops, 29sfilm-card-studio)

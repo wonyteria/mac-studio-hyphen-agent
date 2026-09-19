@@ -47,7 +47,7 @@ const html = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hermes Chat</title>
+  <title>Hyphen Studio Agent</title>
   <style>
     :root {
       color-scheme: light;
@@ -306,8 +306,28 @@ const html = `<!doctype html>
     .event-list { border-top: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
     .event { color: var(--muted); display: grid; font-size: 12px; gap: 2px; grid-template-columns: 82px minmax(0, 1fr); }
     .event strong { color: var(--text); font-weight: 600; }
-    .empty { color: var(--muted); margin: 22vh auto 0; max-width: 520px; text-align: center; }
+    .empty { color: var(--muted); margin: 18vh auto 0; max-width: 560px; text-align: center; }
     .empty h1 { font-size: clamp(28px, 5vw, 38px); margin-bottom: 12px; }
+    .preset-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+    .preset {
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 13px;
+      min-height: 40px;
+      padding: 0 16px;
+    }
+    .preset:hover { background: var(--soft); }
+    .chat-side { align-items: center; display: flex; gap: 10px; }
+    .evidence { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .pill.offline { border-color: #f0c4bc; color: var(--danger); }
+    .s1 { border-bottom: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
+    .s1-head { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+    .s1-title { font-size: 12px; font-weight: 650; }
+    .s1-badge { border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; padding: 2px 8px; white-space: nowrap; }
+    .s1-row { color: var(--muted); display: flex; font-size: 12px; justify-content: space-between; }
+    .s1-row strong { color: var(--text); font-weight: 600; }
     @media (max-width: 760px) {
       #app { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -326,8 +346,8 @@ const html = `<!doctype html>
     <section class="login-card">
       <span class="mark">H</span>
       <div>
-        <h1>Hermes에 로그인</h1>
-        <p class="muted">사내 Mac Studio 운영 요청을 남기는 내부 챗봇입니다.</p>
+        <h1>Hyphen Studio Agent</h1>
+        <p class="muted">Hyphen Studio 프로젝트를 Mac Studio에서 실행하고 확인하는 내부 에이전트입니다.</p>
       </div>
       <form id="loginForm" class="stack">
         <input id="password" type="password" placeholder="1234" autocomplete="current-password" />
@@ -340,26 +360,26 @@ const html = `<!doctype html>
     <aside class="sidebar">
       <div>
         <div class="side-top">
-          <div class="brand"><span class="mark">H</span><span>Hermes</span></div>
+          <div class="brand"><span class="mark">H</span><span>Hyphen Studio Agent</span></div>
           <button id="refresh" class="icon-btn" title="새로고침">↻</button>
         </div>
         <button id="newChat" class="new-chat">+ 새 요청</button>
         <nav id="threads" class="threads"></nav>
       </div>
       <div class="side-bottom">
-        <span>Mac Studio</span>
+        <span>Mac Studio · Hermes</span>
         <button id="logout" class="icon-btn" title="로그아웃">⌁</button>
       </div>
     </aside>
     <section class="chat">
       <header class="chat-top">
-        <div class="chat-title"><strong>Hermes 사내 챗봇</strong><span class="pill">운영 큐</span></div>
-        <button id="refreshTop" class="pill">새로고침</button>
+        <div class="chat-title"><strong>Hyphen Studio Agent</strong><span id="conn" class="pill">연결 확인 중</span></div>
+        <div class="chat-side"><span id="evidence" class="evidence" hidden></span><button id="refreshTop" class="pill">새로고침</button></div>
       </header>
       <div id="messages" class="messages"></div>
       <form id="requestForm" class="composer-wrap">
         <div class="composer">
-          <textarea id="body" placeholder="Hermes에게 요청하기"></textarea>
+          <textarea id="body" placeholder="프로젝트 요청을 자연스럽게 적어주세요"></textarea>
           <div class="composer-bar">
             <div class="composer-options">
               <select id="project" class="project" aria-label="대상 프로젝트"></select>
@@ -386,42 +406,131 @@ const html = `<!doctype html>
     const $ = (id) => document.getElementById(id);
     const labels = { auto: "자동 판단", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
     const statusLabels = { queued: "대기 중", approval_required: "승인 필요", running: "실행 중", done: "완료", failed: "실패", canceled: "취소됨" };
+    const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
+    const verdictLabels = { allow: "허용", warn: "주의", block: "차단" };
+    const presets = [
+      { id: "priorities", label: "오늘 우선순위", body: "{project}의 저장소와 배포 상태를 보고 오늘 우선순위를 정리해줘", type: "project_inspect" },
+      { id: "blocked", label: "막힌 프로젝트", body: "{project}가 막힌 곳이 있는지 저장소 상태를 점검해줘", type: "project_inspect" },
+      { id: "mac", label: "Mac 상태 점검", body: "Mac 상태를 점검해줘", type: "mac_status" },
+      { id: "deploy", label: "배포 상태 확인", body: "배포 상태를 확인해줘", type: "deployment_status" },
+    ];
+    const capabilityGuidance = {
+      project_inspect: "선택한 프로젝트에는 저장소 점검 연결이 없습니다. 저장소가 연결된 프로젝트를 선택해주세요.",
+      development: "선택한 프로젝트에는 저장소 개발 연결이 없습니다. 저장소가 연결된 프로젝트를 선택해주세요.",
+      redeploy: "선택한 프로젝트에는 재배포 연결이 없습니다. 재배포할 수 있는 프로젝트를 선택해주세요.",
+      deployment_status: "선택한 프로젝트에는 배포 상태 연결이 없습니다. 배포 상태를 확인할 수 있는 프로젝트를 선택해주세요.",
+    };
+    const capabilityGuidanceFallback = "선택한 프로젝트에는 이 작업이 연결되어 있지 않습니다. 이 작업을 지원하는 프로젝트를 선택해주세요.";
+    const capabilityGatedTypes = ["deployment_status", "project_inspect", "redeploy", "development"];
     let current = null;
     let composingNew = false;
     let pollTimer = null;
+    let projectNames = {};
+    let projectCapabilities = {};
     async function api(path, init) {
       const res = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...init });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || data.detail || res.statusText);
+      if (!res.ok) {
+        const error = new Error(data.error || data.detail || res.statusText);
+        error.status = res.status;
+        throw error;
+      }
       return data;
+    }
+    function setConn(connected) {
+      const el = $("conn");
+      el.textContent = connected ? "연결됨" : "연결 끊김 · 재시도 중";
+      el.classList.toggle("offline", !connected);
+    }
+    function renderEvidence(summary) {
+      const el = $("evidence");
+      const observed = summary ? summary.observedOk + summary.observedError : 0;
+      if (summary && observed > 0) {
+        el.textContent = "빠른 판단 " + observed + "/" + summary.totalEligibleRequests + "건 관찰" + (summary.abstained > 0 ? " · 소유자 확인 " + summary.abstained + "건" : "");
+        el.hidden = false;
+      } else {
+        el.hidden = true;
+      }
     }
     async function load() {
       try {
         const [{ requests }, { projects }] = await Promise.all([api("/api/requests"), api("/api/projects")]);
         $("login").hidden = true; $("app").hidden = false;
         document.body.classList.add("authed");
+        setConn(true);
+        projectNames = Object.fromEntries(projects.map((project) => [project.id, project.name]));
+        projectCapabilities = Object.fromEntries(projects.map((project) => [project.id, project.capabilities || []]));
         const selectedProject = $("project").value;
         $("project").innerHTML = projects.map((project) => '<option value="' + esc(project.id) + '">' + esc(project.name) + '</option>').join("");
         if (projects.some((project) => project.id === selectedProject)) $("project").value = selectedProject;
+        refreshPresetGuidance();
         render(requests);
+        api("/api/system1/summary").then(renderEvidence).catch(() => renderEvidence(null));
         clearTimeout(pollTimer);
         const busy = requests.some((request) => ["queued", "running"].includes(request.status));
         pollTimer = setTimeout(load, busy ? 2000 : 8000);
-      } catch {
-        $("login").hidden = false; $("app").hidden = true;
-        document.body.classList.remove("authed");
+      } catch (error) {
         clearTimeout(pollTimer);
+        if (error && error.status === 401) {
+          $("login").hidden = false; $("app").hidden = true;
+          document.body.classList.remove("authed");
+          return;
+        }
+        setConn(false);
+        pollTimer = setTimeout(load, 5000);
       }
     }
     function esc(v) { return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
     function titleFrom(text) { return String(text || "새 요청").trim().replace(/\\s+/g, " ").slice(0, 56) || "새 요청"; }
     function assistantText(r) {
-      if (r.status === "approval_required") return "Hermes가 변경 작업으로 판단했습니다. 아래 승인 버튼을 누르면 Mac Studio 워커가 이어서 처리합니다.";
+      if (r.status === "approval_required") return "변경이 필요한 작업으로 판단했습니다. 승인하기 전에는 아무것도 실행되지 않습니다.";
       if (r.status === "queued") return "요청을 큐에 넣었습니다. Mac Studio 워커가 곧 가져갑니다.";
       if (r.status === "running") return "Mac Studio에서 실행 중입니다.";
       if (r.status === "failed") return "처리 중 오류가 발생했습니다.";
       if (r.status === "canceled") return "요청이 실행 전에 취소되었습니다.";
       return "처리가 완료되었습니다.";
+    }
+    function approvalText(r) {
+      const type = r.resolved_type || r.type;
+      if (type === "development") return "승인하면 선택한 프로젝트 저장소에서 Codex가 코드를 수정하고, 확인 명령을 실행한 뒤 커밋·재배포와 상태 점검까지 이어집니다.";
+      if (type === "redeploy") return "승인하면 선택한 프로젝트를 Mac Studio 배포 서비스로 다시 배포합니다.";
+      if (type === "file_cleanup") return "승인하면 Mac Studio에서 파일 정리 작업을 실행합니다.";
+      if (type === "hermes_ops") return "승인하면 Hermes가 검증된 운영 명령 하나를 골라 Mac Studio에서 실행합니다.";
+      return "승인하면 Mac Studio 워커가 이 요청을 실행합니다.";
+    }
+    function shadowPanel(shadow) {
+      if (!shadow || shadow.kind !== "hermes.system1.shadow") return "";
+      const head = '<div class="s1-head"><span class="s1-title">빠른 판단</span><span class="s1-badge">관찰 전용 · 실행에 영향 없음</span></div>';
+      if (shadow.status !== "ok") return '<div class="s1">' + head + '<div class="s1-row"><span>관찰 결과를 사용할 수 없습니다</span></div></div>';
+      const confidence = typeof shadow.confidence === "number" && shadow.confidence >= 0 && shadow.confidence <= 1 ? Math.round(shadow.confidence * 100) + "%" : "-";
+      return '<div class="s1">' + head +
+        '<div class="s1-row"><span>예상 경로</span><strong>' + esc(routeLabels[shadow.route] || "확인 필요") + '</strong></div>' +
+        '<div class="s1-row"><span>정책 판정</span><strong>' + esc(verdictLabels[shadow.policyVerdict] || "확인 필요") + '</strong></div>' +
+        '<div class="s1-row"><span>확신도</span><strong>' + confidence + '</strong></div></div>';
+    }
+    function refreshPresetGuidance() {
+      const el = $("formStatus");
+      const type = $("type").value;
+      const project = $("project").value;
+      const capabilities = projectCapabilities[project] || [];
+      if (capabilityGatedTypes.includes(type) && project && !capabilities.includes(type)) {
+        el.textContent = capabilityGuidance[type] || capabilityGuidanceFallback;
+        el.dataset.guide = "1";
+      } else if (el.dataset.guide === "1") {
+        el.textContent = "";
+        delete el.dataset.guide;
+      }
+    }
+    function applyPreset(id) {
+      const preset = presets.find((item) => item.id === id);
+      if (!preset) return;
+      const projectName = projectNames[$("project").value];
+      const scope = projectName ? "선택한 프로젝트 " + projectName : "선택한 프로젝트";
+      $("body").value = preset.body.replaceAll("{project}", scope);
+      $("type").value = preset.type;
+      if (preset.project && [...$("project").options].some((option) => option.value === preset.project)) $("project").value = preset.project;
+      refreshPresetGuidance();
+      $("body").focus();
     }
     function render(requests) {
       const sorted = [...requests].sort((a, b) => b.created_at - a.created_at);
@@ -429,14 +538,19 @@ const html = `<!doctype html>
       $("threads").innerHTML = sorted.map((r) => '<button class="thread" data-thread="' + r.id + '"><strong>' + esc(r.title) + '</strong><span>' + esc(statusLabels[r.status] || r.status) + ' · ' + esc(labels[r.resolved_type || r.type] || r.resolved_type || r.type) + '</span></button>').join("");
       const active = current ? sorted.find((r) => r.id === current) : null;
       if (!active) {
-        $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>Mac 상태 확인, 파일 정리 후보 점검, Codex 개발 요청을 채팅처럼 남길 수 있습니다.</p></div>';
+        $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>프로젝트를 고르고 자연스럽게 요청하면 Hermes가 Mac Studio에서 안전하게 처리합니다.</p><div class="preset-grid">' +
+          presets.map((preset) => '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
+          '</div></div>';
         return;
       }
       const events = (active.events || []).slice(-6).reverse().map((event) => '<div class="event"><span>' + esc(new Date(event.at).toLocaleTimeString()) + '</span><strong>' + esc(event.message) + '</strong></div>').join("");
+      const projectName = projectNames[active.target_project] || active.target_project || "";
       $("messages").innerHTML = '<article class="message user"><div class="avatar">나</div><div class="bubble"><h2>' + esc(active.title) + '</h2><p>' + esc(active.body) + '</p></div></article>' +
-        '<article class="message assistant"><div class="avatar">H</div><div class="bubble"><h2>Hermes</h2><p>' + esc(assistantText(active)) + '</p><div class="assistant-block"><div class="block-head"><span>' + esc(labels[active.resolved_type || active.type] || active.resolved_type || active.type) + '</span><span class="status ' + active.status + '">' + esc(statusLabels[active.status] || active.status) + '</span></div>' +
+        '<article class="message assistant"><div class="avatar">H</div><div class="bubble"><h2>Hyphen Studio Agent</h2><p>' + esc(assistantText(active)) + '</p><div class="assistant-block"><div class="block-head"><span>' + esc(labels[active.resolved_type || active.type] || active.resolved_type || active.type) + (projectName ? ' · ' + esc(projectName) : '') + '</span><span class="status ' + active.status + '">' + esc(statusLabels[active.status] || active.status) + '</span></div>' +
+        shadowPanel(active.system1_shadow) +
         (active.plan ? '<p class="progress-copy"><strong>판단:</strong> ' + esc(active.plan) + '</p>' : '') +
         (active.progress ? '<p class="progress-copy">' + esc(active.progress) + '</p>' : '') +
+        (active.status === 'approval_required' ? '<p class="progress-copy">' + esc(approvalText(active)) + '</p>' : '') +
         (active.result ? '<pre>' + esc(active.result) + '</pre>' : '<pre>' + esc(new Date(active.updated_at).toLocaleString()) + '</pre>') +
         (events ? '<div class="event-list">' + events + '</div>' : '') +
         (active.status === 'approval_required' ? '<div class="block-head"><button class="primary" data-approve="' + active.id + '">실행 승인</button><button class="pill" data-cancel="' + active.id + '">취소</button></div>' : '') +
@@ -446,12 +560,14 @@ const html = `<!doctype html>
       $("messages").scrollTop = $("messages").scrollHeight;
     }
     $("loginForm").onsubmit = async (event) => { event.preventDefault(); try { const password = $("password").value; if (!password) { $("loginError").textContent = "비밀번호를 입력해주세요."; return; } await api("/api/login", { method: "POST", body: JSON.stringify({ password }) }); await load(); } catch (e) { $("loginError").textContent = "비밀번호가 맞지 않습니다."; } };
-    $("requestForm").onsubmit = async (event) => { event.preventDefault(); $("formStatus").textContent = ""; const body = $("body").value.trim(); if (!body) return; try { const created = await api("/api/requests", { method: "POST", body: JSON.stringify({ type: $("type").value, title: titleFrom(body), body, target_project: $("project").value || "hermes-mac-ops" }) }); current = created.request.id; composingNew = false; $("body").value = ""; await load(); } catch (error) { $("formStatus").textContent = error.message || "요청을 보내지 못했습니다."; } };
+    $("requestForm").onsubmit = async (event) => { event.preventDefault(); $("formStatus").textContent = ""; delete $("formStatus").dataset.guide; const body = $("body").value.trim(); if (!body) return; try { const created = await api("/api/requests", { method: "POST", body: JSON.stringify({ type: $("type").value, title: titleFrom(body), body, target_project: $("project").value || "hermes-mac-ops" }) }); current = created.request.id; composingNew = false; $("body").value = ""; await load(); } catch (error) { if (error.message === "project_capability_not_enabled") { $("formStatus").textContent = capabilityGuidance[$("type").value] || capabilityGuidanceFallback; $("formStatus").dataset.guide = "1"; } else { $("formStatus").textContent = error.message || "요청을 보내지 못했습니다."; } } };
     $("threads").onclick = async (event) => { const id = event.target?.closest?.("[data-thread]")?.dataset?.thread; if (id) { current = id; composingNew = false; await load(); } };
-    $("messages").onclick = async (event) => { const approveId = event.target?.dataset?.approve; const cancelId = event.target?.dataset?.cancel; const retryId = event.target?.dataset?.retry; if (approveId) await api("/api/requests/" + approveId + "/approve", { method: "POST", body: "{}" }); if (cancelId) await api("/api/requests/" + cancelId + "/cancel", { method: "POST", body: "{}" }); if (retryId) await api("/api/requests/" + retryId + "/retry", { method: "POST", body: "{}" }); if (approveId || cancelId || retryId) await load(); };
+    $("messages").onclick = async (event) => { const presetId = event.target?.closest?.("[data-preset]")?.dataset?.preset; if (presetId) { applyPreset(presetId); return; } const approveId = event.target?.dataset?.approve; const cancelId = event.target?.dataset?.cancel; const retryId = event.target?.dataset?.retry; if (approveId) await api("/api/requests/" + approveId + "/approve", { method: "POST", body: "{}" }); if (cancelId) await api("/api/requests/" + cancelId + "/cancel", { method: "POST", body: "{}" }); if (retryId) await api("/api/requests/" + retryId + "/retry", { method: "POST", body: "{}" }); if (approveId || cancelId || retryId) await load(); };
     $("newChat").onclick = () => { current = null; composingNew = true; $("body").focus(); void load(); };
     $("refresh").onclick = load;
     $("refreshTop").onclick = load;
+    $("project").onchange = refreshPresetGuidance;
+    $("type").onchange = refreshPresetGuidance;
     $("logout").onclick = async () => { await api("/api/logout", { method: "POST", body: "{}" }); await load(); };
     $("body").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("requestForm").requestSubmit(); } });
     load();
@@ -560,6 +676,9 @@ function classify(type) {
 }
 
 const system1ShadowKind = "hermes.system1.shadow";
+const system1SummaryKind = "hermes.system1.shadow-summary";
+const system1SummaryRoutes = ["NO_ACTION", "LOCAL_SCRIPT", "LOCAL_LLM", "GPT", "CODEX", "DEVIN", "REQUIRE_OWNER"];
+const system1SummaryVerdicts = ["allow", "warn", "block"];
 let system1Module = null;
 let system1ModuleFailed = false;
 
@@ -621,6 +740,48 @@ async function computeSystem1Shadow(request, project) {
   } catch {
     return marker("error");
   }
+}
+
+// Read-only traffic-coverage aggregate. totalEligibleRequests counts every
+// valid stored request; observedOk/observedError count requests carrying the
+// bounded system1_shadow marker (an error marker still counts as observed).
+// Only status "ok"/"error" are valid observations — a kind/schema-matching
+// record with any other status is ignored entirely. coverageRate = observed /
+// totalEligibleRequests. Route/policy/abstained aggregates use status=ok
+// records only. The response is a strict count
+// allowlist: no request ids, titles, bodies, results, events, timestamps,
+// features, or paths, and no external calls.
+function summarizeSystem1Shadow(requests) {
+  const summary = {
+    kind: system1SummaryKind,
+    schemaVersion: 1,
+    totalEligibleRequests: 0,
+    observedOk: 0,
+    observedError: 0,
+    routes: Object.fromEntries(system1SummaryRoutes.map((route) => [route, 0])),
+    policyVerdicts: Object.fromEntries(system1SummaryVerdicts.map((verdict) => [verdict, 0])),
+    abstained: 0,
+    coverageRate: 0,
+  };
+  for (const request of Array.isArray(requests) ? requests : []) {
+    if (!request || typeof request !== "object" || typeof request.id !== "string") continue;
+    summary.totalEligibleRequests += 1;
+    const shadow = request.system1_shadow;
+    if (!shadow || shadow.kind !== system1ShadowKind || shadow.schemaVersion !== 1) continue;
+    if (shadow.status === "error") {
+      summary.observedError += 1;
+      continue;
+    }
+    if (shadow.status !== "ok") continue;
+    summary.observedOk += 1;
+    if (Object.hasOwn(summary.routes, shadow.route)) summary.routes[shadow.route] += 1;
+    if (Object.hasOwn(summary.policyVerdicts, shadow.policyVerdict)) summary.policyVerdicts[shadow.policyVerdict] += 1;
+    if (shadow.abstained === true) summary.abstained += 1;
+  }
+  const observed = summary.observedOk + summary.observedError;
+  summary.coverageRate =
+    summary.totalEligibleRequests > 0 ? Math.round((observed / summary.totalEligibleRequests) * 10000) / 10000 : 0;
+  return summary;
 }
 
 function projectSupports(project, type) {
@@ -695,6 +856,11 @@ createServer(async (req, res) => {
         capabilities,
       }));
       return send(res, 200, { projects });
+    }
+    if (url.pathname === "/api/system1/summary" && req.method === "GET") {
+      if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
+      const store = await readStore();
+      return send(res, 200, summarizeSystem1Shadow(store.requests));
     }
     if (url.pathname === "/api/requests" && req.method === "POST") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });

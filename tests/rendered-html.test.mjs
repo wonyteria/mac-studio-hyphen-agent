@@ -86,19 +86,134 @@ after(async () => {
   await rm(runtimeDir, { force: true, recursive: true });
 });
 
-test("renders the production Hermes chat shell", async () => {
+test("renders the production Hyphen Studio Agent shell", async () => {
   const response = await fetch(baseUrl);
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") || "", /^text\/html/);
   assert.equal(response.headers.get("x-frame-options"), "DENY");
   const html = await response.text();
-  assert.match(html, /Hermes 사내 챗봇/);
+  assert.match(html, /<title>Hyphen Studio Agent<\/title>/);
+  assert.match(html, /Hyphen Studio Agent/);
   assert.match(html, /id="project"/);
   assert.match(html, /<option value="auto">자동 판단<\/option>/);
   assert.match(html, /Hermes 4\.3 대화/);
   assert.match(html, /Hermes 운영 요청/);
   assert.match(html, /Codex 개발 요청/);
   assert.match(html, /progress-copy/);
+});
+
+test("shows truthful connection state driven by API results", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  assert.match(html, /id="conn" class="pill">연결 확인 중/);
+  assert.match(html, /"연결됨" : "연결 끊김 · 재시도 중"/);
+  const loader = html.match(/async function load\(\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(loader, "load() missing");
+  assert.match(loader[0], /setConn\(true\)/);
+  assert.match(loader[0], /setConn\(false\)/);
+  assert.match(loader[0], /error\.status === 401/);
+});
+
+test("empty-state presets only prefill and select existing request types", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  for (const label of ["오늘 우선순위", "막힌 프로젝트", "Mac 상태 점검", "배포 상태 확인"]) {
+    assert.ok(html.includes(`label: "${label}"`), `missing preset ${label}`);
+  }
+  for (const [id, type] of [
+    ["priorities", "project_inspect"],
+    ["blocked", "project_inspect"],
+    ["mac", "mac_status"],
+    ["deploy", "deployment_status"],
+  ]) {
+    assert.match(html, new RegExp(`id: "${id}"[^\\n]*type: "${type}"`), `preset ${id} must map to ${type}`);
+  }
+  assert.match(html, /\{project\}/, "priority/blocked presets must scope to the selected project");
+  const knownTypes = [
+    "auto",
+    "hermes_chat",
+    "hermes_ops",
+    "mac_status",
+    "deployment_status",
+    "project_inspect",
+    "redeploy",
+    "file_cleanup",
+    "development",
+    "custom",
+  ];
+  for (const type of html.matchAll(/type: "([a-z_]+)"/g)) {
+    assert.ok(knownTypes.includes(type[1]), `preset selects unknown type ${type[1]}`);
+  }
+  assert.match(html, /data-preset="/);
+  const apply = html.match(/function applyPreset\(id\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(apply, "applyPreset missing");
+  assert.match(apply[0], /\$\("body"\)\.value = preset\.body\.replaceAll\("\{project\}"/);
+  assert.match(apply[0], /projectNames\[\$\("project"\)\.value\]/);
+  assert.match(apply[0], /\$\("type"\)\.value = preset\.type/);
+  for (const submission of ["requestSubmit", "fetch(", "api(", "submit("]) {
+    assert.equal(apply[0].includes(submission), false, `preset path may auto-submit via ${submission}`);
+  }
+});
+
+test("capability-limited projects get type-specific pre-submit guidance without bypassing the gate", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  assert.match(html, /projectCapabilities = Object\.fromEntries\(projects\.map/);
+  // The repository-inspection wording is reserved for project_inspect only.
+  assert.match(
+    html,
+    /project_inspect: "선택한 프로젝트에는 저장소 점검 연결이 없습니다\. 저장소가 연결된 프로젝트를 선택해주세요\."/,
+  );
+  for (const type of ["deployment_status", "redeploy", "development"]) {
+    const line = html.match(new RegExp(`${type}: "([^"]+)"`));
+    assert.ok(line, `missing guidance for ${type}`);
+    assert.equal(line[1].includes("저장소 점검"), false, `${type} guidance must not claim repository inspection`);
+  }
+  const guide = html.match(/function refreshPresetGuidance\(\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(guide, "refreshPresetGuidance missing");
+  assert.match(guide[0], /capabilityGatedTypes\.includes\(type\)/);
+  assert.match(guide[0], /capabilities\.includes\(type\)/);
+  assert.match(guide[0], /capabilityGuidance\[type\]/);
+  assert.match(html, /capabilityGatedTypes = \[[^\]]*"project_inspect"[^\]]*\]/);
+  assert.match(html, /\$\("project"\)\.onchange = refreshPresetGuidance/);
+  assert.match(html, /\$\("type"\)\.onchange = refreshPresetGuidance/);
+  const apply = html.match(/function applyPreset\(id\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(apply, "applyPreset missing");
+  assert.match(apply[0], /refreshPresetGuidance\(\)/);
+  // A backend capability rejection is marked as guidance too, so changing the
+  // project or type recomputes/clears it instead of sticking as a raw error.
+  const submit = html.match(/\$\("requestForm"\)\.onsubmit = async \(event\) => \{[^\n]+\};/);
+  assert.ok(submit, "requestForm onsubmit missing");
+  assert.match(submit[0], /project_capability_not_enabled/);
+  assert.match(submit[0], /capabilityGuidance\[\$\("type"\)\.value\]/);
+  assert.match(submit[0], /dataset\.guide = "1"/);
+  // Guidance must never reach the network or the approval path.
+  for (const bypass of ["requestSubmit", "fetch(", "api(", "approve", "submit("]) {
+    assert.equal(guide[0].includes(bypass), false, `guidance must not ${bypass}`);
+  }
+});
+
+test("빠른 판단 panel renders only allowlisted observation fields", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  assert.match(html, /빠른 판단/);
+  assert.match(html, /관찰 전용 · 실행에 영향 없음/);
+  const panel = html.match(/function shadowPanel\(shadow\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(panel, "shadowPanel missing");
+  for (const allowed of ["shadow.kind", "shadow.status", "shadow.route", "shadow.policyVerdict", "shadow.confidence"]) {
+    assert.ok(panel[0].includes(allowed), `panel should read ${allowed}`);
+  }
+  for (const forbidden of [
+    "features",
+    "taskSignals",
+    "riskFlags",
+    "capabilities",
+    "ambiguity",
+    "determinedBy",
+    "reasons",
+    "observed_at",
+    "shadow.body",
+    "shadow.title",
+    "JSON.stringify(shadow)",
+  ]) {
+    assert.equal(panel[0].includes(forbidden), false, `panel must not reference ${forbidden}`);
+  }
 });
 
 test("requires login for requests and exposes only public project fields", async () => {

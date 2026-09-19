@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -338,4 +338,169 @@ test("policy-blocked shadow result still leaves the request queued untouched", a
   assert.equal(shadow.abstained, true);
   assert.equal(created.data.request.status, "queued");
   assert.equal(created.data.request.risk, "pending");
+});
+
+test("summary endpoint requires an admin session", async () => {
+  const anonymous = await fetch(`${servers.on.baseUrl}/api/system1/summary`);
+  assert.equal(anonymous.status, 401);
+  const workerOnly = await fetch(`${servers.on.baseUrl}/api/system1/summary`, {
+    headers: { "X-Worker-Token": "shadow-worker-token" },
+  });
+  assert.equal(workerOnly.status, 401);
+  const authed = await api(servers.on, "/api/system1/summary");
+  assert.equal(authed.response.status, 200);
+});
+
+test("summary returns the strict allowlist shape and aggregates only shadow records", async () => {
+  const baseline = (await api(servers.on, "/api/system1/summary")).data;
+  const created = await Promise.all([
+    api(servers.on, "/api/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        body: "현재 Mac 디스크 상태 알려줘",
+        target_project: "hermes-mac-ops",
+        title: "summary ok probe",
+        type: "auto",
+      }),
+    }),
+    api(servers.on, "/api/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        body: "프로덕션 서버 재시작하고 배포해줘",
+        target_project: "hermes-mac-ops",
+        title: "summary blocked probe",
+        type: "auto",
+      }),
+    }),
+    api(servers.on, "/api/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        body: "x".repeat(MAX_TEXT_CHARS + 1),
+        target_project: "hermes-mac-ops",
+        title: "summary error probe",
+        type: "auto",
+      }),
+    }),
+  ]);
+  for (const result of created) {
+    assert.equal(result.response.status, 201);
+    createdOnShadowServer.add(result.data.request.id);
+  }
+  const summary = (await api(servers.on, "/api/system1/summary")).data;
+  assert.deepEqual(
+    Object.keys(summary).sort(),
+    [
+      "abstained",
+      "coverageRate",
+      "kind",
+      "observedError",
+      "observedOk",
+      "policyVerdicts",
+      "routes",
+      "schemaVersion",
+      "totalEligibleRequests",
+    ].sort(),
+  );
+  assert.equal(summary.kind, "hermes.system1.shadow-summary");
+  assert.equal(summary.schemaVersion, 1);
+  assert.deepEqual(Object.keys(summary.routes).sort(), [...ROUTES].sort());
+  assert.deepEqual(Object.keys(summary.policyVerdicts).sort(), ["allow", "block", "warn"]);
+  assert.equal(summary.totalEligibleRequests, baseline.totalEligibleRequests + 3);
+  assert.equal(summary.observedOk, baseline.observedOk + 2);
+  assert.equal(summary.observedError, baseline.observedError + 1);
+  // Traffic coverage: every stored request on the shadow-on server carries a
+  // bounded marker (ok or error), so coverage is full.
+  assert.equal(summary.observedOk + summary.observedError, summary.totalEligibleRequests);
+  assert.equal(summary.coverageRate, 1);
+  assert.equal(summary.routes.REQUIRE_OWNER, baseline.routes.REQUIRE_OWNER + 1);
+  assert.equal(summary.policyVerdicts.block, baseline.policyVerdicts.block + 1);
+  assert.equal(summary.abstained, baseline.abstained + 1);
+  const routeTotal = Object.values(summary.routes).reduce((sum, count) => sum + count, 0);
+  const verdictTotal = Object.values(summary.policyVerdicts).reduce((sum, count) => sum + count, 0);
+  // Route/policy/abstained aggregates come from status=ok records only.
+  assert.equal(routeTotal, summary.observedOk);
+  assert.equal(verdictTotal, summary.observedOk);
+
+  // The shadow-off store has eligible requests but zero observed markers.
+  const offStore = JSON.parse(await readFile(servers.off.dataFile, "utf8"));
+  const offSummary = (await api(servers.off, "/api/system1/summary")).data;
+  assert.equal(offSummary.totalEligibleRequests, offStore.requests.length);
+  assert.ok(offSummary.totalEligibleRequests >= 1);
+  assert.equal(offSummary.observedOk, 0);
+  assert.equal(offSummary.observedError, 0);
+  assert.equal(offSummary.coverageRate, 0);
+});
+
+test("summary exposes no request identifiers, content, timestamps, or features", async () => {
+  const marker = "private-marker-7f3d9c";
+  const created = await api(servers.on, "/api/requests", {
+    method: "POST",
+    body: JSON.stringify({
+      body: `상태 확인 ${marker} /Users/hyphen/private.pem`,
+      target_project: "hermes-mac-ops",
+      title: marker,
+      type: "auto",
+    }),
+  });
+  assert.equal(created.response.status, 201);
+  createdOnShadowServer.add(created.data.request.id);
+  const summary = (await api(servers.on, "/api/system1/summary")).data;
+  const serialized = JSON.stringify(summary);
+  for (const fragment of [
+    marker,
+    created.data.request.id,
+    "hermes-mac-ops",
+    "/Users/",
+    "private.pem",
+    "features",
+    "taskSignals",
+    "riskFlags",
+    "observed_at",
+    "events",
+    "title",
+    "result",
+    "confidence",
+  ]) {
+    assert.equal(serialized.includes(fragment), false, `summary leaked ${fragment}`);
+  }
+});
+
+// Runs last on the shadow-on server: it leaves a tampered marker in the store
+// so no later test may assume full coverage.
+test("summary does not observe a kind/schema-matching marker with invalid status", async () => {
+  const baseline = (await api(servers.on, "/api/system1/summary")).data;
+  const created = await api(servers.on, "/api/requests", {
+    method: "POST",
+    body: JSON.stringify({
+      body: "현재 Mac 상태 알려줘",
+      target_project: "hermes-mac-ops",
+      title: "invalid status probe",
+      type: "auto",
+    }),
+  });
+  assert.equal(created.response.status, 201);
+  createdOnShadowServer.add(created.data.request.id);
+  assert.equal(created.data.request.system1_shadow.status, "ok");
+
+  const store = JSON.parse(await readFile(servers.on.dataFile, "utf8"));
+  const item = store.requests.find((candidate) => candidate.id === created.data.request.id);
+  item.system1_shadow = {
+    kind: "hermes.system1.shadow",
+    schemaVersion: 1,
+    observed_at: item.created_at,
+    status: "pending",
+  };
+  await writeFile(servers.on.dataFile, JSON.stringify(store, null, 2), "utf8");
+
+  const summary = (await api(servers.on, "/api/system1/summary")).data;
+  assert.equal(summary.totalEligibleRequests, baseline.totalEligibleRequests + 1);
+  assert.equal(summary.observedOk, baseline.observedOk);
+  assert.equal(summary.observedError, baseline.observedError);
+  assert.equal(summary.abstained, baseline.abstained);
+  for (const key of Object.keys(summary.routes)) {
+    assert.equal(summary.routes[key], baseline.routes[key]);
+  }
+  for (const key of Object.keys(summary.policyVerdicts)) {
+    assert.equal(summary.policyVerdicts[key], baseline.policyVerdicts[key]);
+  }
 });
