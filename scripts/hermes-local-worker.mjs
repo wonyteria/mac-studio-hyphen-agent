@@ -63,11 +63,18 @@ const commandPaths = {
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
-function childEnvironment(scrubSecrets = false) {
+// Every spawned child gets a scrubbed environment: a launchd child inherits
+// its LaunchAgent's EnvironmentVariables, so an inherited credential such as
+// MINI_VERCEL_GITHUB_TOKEN would otherwise leak into git/codex/verify
+// subprocesses. The worker process itself reads the few secrets it needs for
+// its own API headers — children never need them. `extraAllow` re-adds a
+// named variable for a specific call site only.
+const INHERITED_SECRET_PATTERN = /(TOKEN|SECRET|PASSWORD|PASSWD|(^|_)KEY$|API_KEY|PRIVATE)/i;
+export function childEnvironment(extraAllow = []) {
   const environment = { ...process.env, PATH: workerPath };
-  if (!scrubSecrets) return environment;
+  const allowed = new Set(extraAllow);
   for (const key of Object.keys(environment)) {
-    if (/(TOKEN|SECRET|PASSWORD|(^|_)KEY$|API_KEY)/i.test(key)) delete environment[key];
+    if (!allowed.has(key) && INHERITED_SECRET_PATTERN.test(key)) delete environment[key];
   }
   return environment;
 }
@@ -92,7 +99,7 @@ async function api(path, init = {}) {
 export function runCommand(command, args = [], options = {}) {
   const {
     cwd,
-    env = childEnvironment(false),
+    env = childEnvironment(),
     maxOutputBytes = 2 * 1024 * 1024,
     onStderr,
     onStdout,
@@ -688,15 +695,18 @@ ${verification}
 
 const codexPrompt = agentPrompt;
 
-// --- Devin provider adapter (official non-interactive API only, no UI scraping) ---
+// --- Devin provider adapter (official v3 API only, no UI scraping) ---
+// Service user API key (cog_ prefix) + organization id, per
+// docs.devin.ai/api-reference. The worker holds the credential in env only.
 
 const devinApiUrl = process.env.DEVIN_API_URL || "https://api.devin.ai";
+const devinOrgId = process.env.DEVIN_ORG_ID || "";
 const devinBranchPrefix = "hermes/devin-";
 
 async function devinApi(path, init = {}) {
   const key = process.env.DEVIN_API_KEY;
-  if (!key) {
-    throw new Error("Devin 실행자가 설정되지 않았습니다 (DEVIN_API_KEY 미설정).");
+  if (!key || !devinOrgId) {
+    throw new Error("Devin 실행자가 설정되지 않았습니다 (DEVIN_API_KEY/DEVIN_ORG_ID 미설정).");
   }
   const response = await fetch(new URL(path, devinApiUrl), {
     method: init.method || "GET",
@@ -714,56 +724,125 @@ function devinPrompt(request, project, branch) {
   return `${agentPrompt(request, project)}
 추가 Devin 실행 계약:
 - 저장소 ${project.github}의 ${project.branch} 브랜치를 기준으로 작업한다.
-- 작업 결과를 ${project.gitRemote} 리모트의 '${branch}' 브랜치로 푸시한다.
+- 작업 결과를 origin 리모트의 '${branch}' 브랜치로 푸시한다.
 - PR을 열지 않는다. 커밋 메시지와 브랜치 푸시 외의 원격 변경은 하지 않는다.
 - 완료하면 변경 파일 목록과 검증 결과를 한국어로 요약 보고한다.
 `;
 }
 
+function devinRepoName(github) {
+  const match = String(github || "").match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+  return match ? match[1] : null;
+}
+
 export function parseDevinSession(payload) {
-  const statusEnum = String(payload?.status_enum || payload?.status || "").toLowerCase();
   const structured = payload?.structured_output;
   return {
-    id: String(payload?.session_id || payload?.id || ""),
+    id: String(payload?.session_id || ""),
     url: String(payload?.url || ""),
-    status: statusEnum,
-    detail: String(structured?.result || payload?.result_detail || "").slice(0, 4000),
+    status: String(payload?.status || "").toLowerCase(),
+    statusDetail: String(payload?.status_detail || "").toLowerCase(),
+    detail: String(structured?.result || "").slice(0, 4000),
+    pullRequests: Array.isArray(payload?.pull_requests)
+      ? payload.pull_requests.map((pr) => String(pr?.pr_url || pr?.url || "")).filter(Boolean).slice(0, 8)
+      : [],
   };
 }
 
+const devinFailedDetails = new Set([
+  "usage_limit_exceeded",
+  "out_of_credits",
+  "out_of_quota",
+  "no_quota_allocation",
+  "payment_declined",
+  "org_usage_limit_exceeded",
+  "user_usage_limit_exceeded",
+  "total_session_limit_exceeded",
+  "error",
+]);
+
+// Fail-closed v3 terminal mapping: 'exit' is success only with
+// status_detail 'finished'; waiting_for_approval can never be satisfied by
+// the worker (that approval is an operator decision); quota/billing details
+// fail honestly; unknown enums keep polling under the deadline.
 function devinTerminalStatus(session) {
-  if (["finished", "succeeded", "completed", "done"].includes(session.status)) return "finished";
-  if (["expired", "failed", "error", "suspended", "blocked"].includes(session.status)) return "failed";
+  const { status, statusDetail } = session;
+  if (status === "exit") return statusDetail === "finished" ? "finished" : "failed";
+  if (status === "error" || status === "suspended") return "failed";
+  if (devinFailedDetails.has(statusDetail)) return "failed";
+  if (statusDetail === "waiting_for_approval") return "failed";
+  if (status === "running" && statusDetail === "waiting_for_user") return "waiting";
+  if (["new", "claimed", "running", "resuming"].includes(status)) return "running";
   return "running";
 }
 
-// Creates a Devin session and polls it to a terminal state. Bounded: 45 min
-// deadline, 20 s poll interval, status codes only in errors — never request
-// bodies, prompts, or credential material.
+function devinLastAgentMessage(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
+  const agentMessages = items.filter((item) => /devin|agent|assistant/i.test(String(item?.role || item?.type || "")));
+  const last = agentMessages.at(-1) || items.at(-1);
+  return String(last?.message || last?.content || last?.text || "").slice(0, 4000);
+}
+
+// Creates a v3 session and polls it to a terminal state. Bounded: 45 min
+// deadline, 20 s poll interval, one bounded nudge when Devin waits for user
+// input, status codes only in errors — never bodies, prompts, or credentials.
 async function runDevinSession(request, project, devinBranch, reporter) {
-  const created = await devinApi("/v1/sessions", {
+  const base = `/v3/organizations/${devinOrgId}/sessions`;
+  const repo = devinRepoName(project.github);
+  const acu = Number(process.env.DEVIN_MAX_ACU || 0);
+  const created = await devinApi(base, {
     method: "POST",
     body: {
       prompt: devinPrompt(request, project, devinBranch).slice(0, 8000),
-      idempotent: true,
-      idempotency_key: `hermes-${request.id}`,
+      title: String(request.title || "Hermes 개발 요청").slice(0, 140),
+      tags: ["hermes-ops", `hermes-${String(request.id).slice(0, 40)}`],
+      resumable: false,
+      structured_output_schema: {
+        type: "object",
+        properties: { result: { type: "string" } },
+        required: ["result"],
+      },
+      ...(repo ? { repos: [repo] } : {}),
+      ...(Number.isFinite(acu) && acu > 0 ? { max_acu_limit: Math.min(Math.floor(acu), 100) } : {}),
     },
   });
   const session = parseDevinSession(created);
-  if (!session.id) throw new Error("Devin 세션 ID를 받지 못했습니다.");
+  if (!session.id || !session.id.startsWith("devin-")) {
+    throw new Error("Devin 세션 ID를 받지 못했습니다.");
+  }
   await reporter.update("devin", `Devin 세션 실행 중: ${session.url || session.id}`);
   const deadline = Date.now() + 45 * 60 * 1000;
+  let nudged = false;
+  let current = session;
   while (Date.now() < deadline) {
     await sleep(20_000);
-    const current = parseDevinSession(await devinApi(`/v1/sessions/${session.id}`));
+    current = parseDevinSession(await devinApi(`${base}/${session.id}`));
     const terminal = devinTerminalStatus(current);
-    if (terminal === "finished") return current;
+    if (terminal === "finished") break;
     if (terminal === "failed") {
-      throw new Error(`Devin 세션이 완료되지 못했습니다 (상태: ${current.status || "unknown"}).`);
+      throw new Error(
+        `Devin 세션이 완료되지 못했습니다 (상태: ${current.status || "unknown"}${current.statusDetail ? `/${current.statusDetail}` : ""}).`,
+      );
+    }
+    if (terminal === "waiting" && !nudged) {
+      nudged = true;
+      await devinApi(`${base}/${session.id}/messages`, {
+        method: "POST",
+        body: {
+          message:
+            "추가 입력 없이 계속 진행해주세요. 완료하면 변경을 약속된 브랜치에 푸시하고 한국어로 요약해주세요.",
+        },
+      }).catch(() => {});
     }
     await reporter.extendLease(30 * 60 * 1000);
   }
-  throw new Error("Devin 세션이 시간 제한(45분)을 초과했습니다.");
+  if (Date.now() >= deadline) throw new Error("Devin 세션이 시간 제한(45분)을 초과했습니다.");
+  if (!current.detail) {
+    const messages = await devinApi(`${base}/${session.id}/messages`).catch(() => null);
+    const lastMessage = messages ? devinLastAgentMessage(messages) : "";
+    if (lastMessage) current = { ...current, detail: lastMessage };
+  }
+  return current;
 }
 
 // Fetches the branch Devin pushed and applies its diff inside the isolated
@@ -821,7 +900,7 @@ async function runCodexAgent(request, project, executionProject, reporter) {
     ],
     {
       cwd: executionProject.repo,
-      env: childEnvironment(true),
+      env: childEnvironment(),
       onStderr: (value) => reporter.appendLog(value),
       timeoutMs: 45 * 60 * 1000,
     },
@@ -838,11 +917,14 @@ async function runCodexAgent(request, project, executionProject, reporter) {
 export async function reportProviderReadiness() {
   try {
     const probe = await runCommand("codex", ["--version"], { timeoutMs: 5000 });
+    const devinConfigured = Boolean(
+      String(process.env.DEVIN_API_KEY || "").startsWith("cog_") && process.env.DEVIN_ORG_ID,
+    );
     await api("/api/worker/providers", {
       method: "POST",
       body: JSON.stringify({
         codex: { state: probe.code === 0 ? "ready" : "unavailable" },
-        devin: { state: process.env.DEVIN_API_KEY ? "configured" : "unavailable" },
+        devin: { state: devinConfigured ? "configured" : "unavailable" },
       }),
     });
   } catch {
@@ -892,7 +974,7 @@ async function runVerification(project, reporter) {
     await reporter.update("verify", `검증 중 (${index + 1}/${commands.length}): ${verifyCommand}`);
     const result = await command("shell", ["-lc", verifyCommand], {
       cwd: project.repo,
-      env: childEnvironment(true),
+      env: childEnvironment(),
       timeoutMs: 15 * 60 * 1000,
     });
     outputs.push(`${verifyCommand}\n${trimOutput(result.stdout || result.stderr || "통과", 2500)}`);
@@ -1038,7 +1120,7 @@ async function ensureOllamaServer() {
     const child = spawn(commandPaths.ollama, ["serve"], {
       detached: true,
       env: {
-        ...childEnvironment(true),
+        ...childEnvironment(),
         OLLAMA_CONTEXT_LENGTH: "16384",
         OLLAMA_HOST: "127.0.0.1:11434",
         OLLAMA_KEEP_ALIVE: "2m",

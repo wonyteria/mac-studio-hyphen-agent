@@ -113,6 +113,32 @@ The runtime dir must already contain a real `.env` with `HERMES_OPS_URL` and
    The plist runs `/bin/zsh -c 'set -a; source <runtime>/.env; set +a; exec node <runtime>/hermes-local-worker.mjs'`, so secrets stay in `.env` and out of the plist. Logs go to `~/Library/Logs/hermes-ops-worker*.log`.
 6. To unload later: `launchctl unload ~/Library/LaunchAgents/com.hyphen.hermes-ops-worker.plist`
 
+## Inherited-environment boundary (hardening)
+
+A launchd child inherits its LaunchAgent's `EnvironmentVariables` — so any
+credential defined there (for example a `MINI_VERCEL_GITHUB_TOKEN` observed in
+one agent's environment) would flow into every subprocess the worker spawns:
+git, codex, devin API calls, verify commands, Ollama. The worker therefore
+builds every child's environment through `childEnvironment()`, which removes
+all variables matching `TOKEN`/`SECRET`/`PASSWORD`/`PASSWD`/`(^|_)KEY`/`API_KEY`/`PRIVATE`
+before spawning. `MINI_VERCEL_ADMIN_TOKEN` is unaffected — the worker reads it
+in-process for its own deploy API headers; it never needs to reach a child.
+`childEnvironment(extraAllow)` can re-add a named variable for one specific
+call site — that is the only sanctioned way to widen a child's environment,
+and adding a credential to `extraAllow` requires the same review as adding a
+new secret flow.
+
+Operator rules:
+
+- Keep credentials in `<runtime>/.env` (sourced by the wrapper), not in the
+  plist's `EnvironmentVariables` — anything in the plist is inherited by the
+  whole process tree.
+- Never read, print, or test against a real credential value; tests assert
+  absence with fixture values only.
+- The Discord notifier (`scripts/hermes-discord-ops.mjs install`) writes its
+  own LaunchAgent and refuses TCC-protected script paths — deploy it beside
+  the worker first. See `DISCORD.md`.
+
 ## Known warnings (2026-09-19 baseline)
 
 `--verify --preflight` currently surfaces two `branch_not_found` warnings in the

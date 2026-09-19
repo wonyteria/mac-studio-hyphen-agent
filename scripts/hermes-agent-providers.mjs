@@ -52,11 +52,18 @@ export async function codexReadiness({ env = process.env, run = runner() } = {})
   return { provider: "codex", state: "ready" };
 }
 
-// Devin readiness = an official-API credential is configured. Presence only —
-// no live call, no value echo. Missing key is honestly unavailable.
+// Devin readiness = official v3 credentials configured (service user API key +
+// org id). Presence only — no live call, no value echo. Missing/legacy pieces
+// are honestly unavailable.
 export function devinReadiness({ env = process.env } = {}) {
   if (!env.DEVIN_API_KEY) {
     return { provider: "devin", state: "unavailable", reason: "missing_credential" };
+  }
+  if (!String(env.DEVIN_API_KEY).startsWith("cog_")) {
+    return { provider: "devin", state: "unavailable", reason: "invalid_key_prefix" };
+  }
+  if (!env.DEVIN_ORG_ID) {
+    return { provider: "devin", state: "unavailable", reason: "missing_org_id" };
   }
   const apiUrl = env.DEVIN_API_URL || DEVIN_DEFAULT_API_URL;
   let host;
@@ -76,42 +83,98 @@ export async function providerReadiness({ env = process.env, run = runner() } = 
   return { codex, devin };
 }
 
-// Devin API request/status/result contract (bounded adapter shape). The worker
-// executes this against fetch; tests run it against a fixture server.
-export function devinSessionRequest({ prompt, idempotencyKey }) {
-  return {
-    path: "/v1/sessions",
-    method: "POST",
-    body: {
-      prompt: String(prompt || "").slice(0, 8000),
-      idempotent: true,
-      idempotency_key: String(idempotencyKey || "").slice(0, 120),
-    },
-  };
+// Devin API request/status/result contract — official v3 organization scope
+// (docs.devin.ai/api-reference). The worker executes this against fetch;
+// tests run it against a fixture server. v3 has no idempotency key — the
+// hermes-<requestId> tag provides traceability instead.
+export function devinSessionCreatePath(orgId) {
+  if (!/^[\w-]{2,120}$/.test(String(orgId || ""))) {
+    throw new Error("유효하지 않은 Devin 조직 ID입니다.");
+  }
+  return `/v3/organizations/${orgId}/sessions`;
 }
 
-export function devinSessionStatusPath(sessionId) {
-  if (!/^[\w-]{4,120}$/.test(String(sessionId || ""))) {
+export function devinSessionPath(orgId, devinId) {
+  if (!/^devin-[\w-]{2,120}$/.test(String(devinId || ""))) {
     throw new Error("유효하지 않은 Devin 세션 ID입니다.");
   }
-  return `/v1/sessions/${sessionId}`;
+  return `${devinSessionCreatePath(orgId)}/${devinId}`;
 }
 
-// Normalizes the official session payload to a small allowlist — never echo
-// raw provider text beyond bounded fields the report already constrains.
+export function devinSessionMessagesPath(orgId, devinId) {
+  return `${devinSessionPath(orgId, devinId)}/messages`;
+}
+
+export function devinSessionRequest({ prompt, requestId, title, repos = [], maxAcu = null }) {
+  const body = {
+    prompt: String(prompt || "").slice(0, 8000),
+    title: String(title || "Hermes 개발 요청").slice(0, 140),
+    tags: ["hermes-ops", `hermes-${String(requestId || "").slice(0, 40)}`],
+    resumable: false,
+    structured_output_schema: {
+      type: "object",
+      properties: { result: { type: "string" } },
+      required: ["result"],
+    },
+  };
+  if (Array.isArray(repos) && repos.length) body.repos = repos.slice(0, 4);
+  const acu = Number(maxAcu);
+  if (Number.isFinite(acu) && acu > 0) body.max_acu_limit = Math.min(Math.floor(acu), 100);
+  return { method: "POST", body };
+}
+
+// Normalizes the official v3 SessionResponse to a small allowlist — never
+// echo raw provider payloads beyond bounded fields.
 export function parseDevinSession(payload) {
-  const statusEnum = String(payload?.status_enum || payload?.status || "").toLowerCase();
   const structured = payload?.structured_output;
   return {
-    id: String(payload?.session_id || payload?.id || ""),
+    id: String(payload?.session_id || ""),
     url: String(payload?.url || ""),
-    status: statusEnum,
-    detail: String(structured?.result || payload?.result_detail || "").slice(0, 4000),
+    status: String(payload?.status || "").toLowerCase(),
+    statusDetail: String(payload?.status_detail || "").toLowerCase(),
+    detail: String(structured?.result || "").slice(0, 4000),
+    pullRequests: Array.isArray(payload?.pull_requests)
+      ? payload.pull_requests
+          .map((pr) => String(pr?.pr_url || pr?.url || ""))
+          .filter(Boolean)
+          .slice(0, 8)
+      : [],
   };
 }
 
+const DEVIN_WAITING_DETAILS = new Set(["waiting_for_user", "waiting_for_approval"]);
+const DEVIN_FAILED_DETAILS = new Set([
+  "usage_limit_exceeded",
+  "out_of_credits",
+  "out_of_quota",
+  "no_quota_allocation",
+  "payment_declined",
+  "org_usage_limit_exceeded",
+  "user_usage_limit_exceeded",
+  "total_session_limit_exceeded",
+  "error",
+]);
+
+// Fail-closed terminal mapping: 'exit' is only a success with
+// status_detail 'finished'; waiting_for_user is pollable; waiting_for_approval
+// fails because the worker can never satisfy Devin's internal approval.
 export function devinTerminalStatus(session) {
-  if (["finished", "succeeded", "completed", "done"].includes(session.status)) return "finished";
-  if (["expired", "failed", "error", "suspended", "blocked"].includes(session.status)) return "failed";
-  return "running";
+  const { status, statusDetail } = session;
+  if (status === "exit") return statusDetail === "finished" ? "finished" : "failed";
+  if (status === "error" || status === "suspended") return "failed";
+  if (DEVIN_FAILED_DETAILS.has(statusDetail)) return "failed";
+  if (statusDetail === "waiting_for_approval") return "failed";
+  if (status === "running" && statusDetail === "waiting_for_user") return "waiting";
+  if (["new", "claimed", "running", "resuming"].includes(status)) return "running";
+  if (DEVIN_WAITING_DETAILS.has(statusDetail)) return "waiting";
+  return "running"; // unknown enum — bounded by the 45-minute deadline
+}
+
+// Extracts the last agent message text from a GET messages response for the
+// final report — bounded, no raw payload echo.
+export function devinLastAgentMessage(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
+  const agentMessages = items.filter((item) => /devin|agent|assistant/i.test(String(item?.role || item?.type || "")));
+  const last = agentMessages.at(-1) || items.at(-1);
+  return String(last?.message || last?.content || last?.text || "").slice(0, 4000);
 }
