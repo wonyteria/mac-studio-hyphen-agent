@@ -92,31 +92,41 @@ The agent workspace also exposes this briefing through three allowlisted request
 
 ## Business Registry Sync
 
-`scripts/hermes-registry-sync.mjs` keeps the container's business registry current: it validates the Studio export (`outputs/registry.private.json`) and atomically copies it into Hermes persistent data — the only writer of the destination file.
+`scripts/hermes-registry-sync.mjs` keeps the container's business registry current: it validates a Studio export copy and atomically mirrors it into Hermes persistent data — the only writer of the destination file.
+
+**launchd boundary (important):** a LaunchAgent cannot `open()` anything under TCC-protected or cloud-backed directories — the syscall suspends forever instead of failing, so a job pointing at `~/Documents` hangs with empty logs before a single line of tool code runs. The contract therefore keeps **every** launchd-touched path outside protected prefixes:
+
+- `install` **stages the tool itself** — both `hermes-registry-sync.mjs` and `hermes-business-registry.mjs` are copied verbatim (0600, atomic) to a stage dir (default `~/Library/Application Support/Hyphen/hermes-registry-sync/tool`, override `--stage-dir`/`HERMES_REGISTRY_SYNC_STAGE_DIR`) and the plist references only the staged copy — never the repo path.
+- The `--source` should be a **mirror** the Studio export refreshes, not the export itself: `npm run export:registry` in Hyphen-Studio reads the recorded config and atomically rewrites the mirror (see below). Studio runs in the operator's TCC-granted context; the agent never touches the Studio checkout.
+- `install` **refuses** any source/destination/status/stage-dir path under `Documents`, `Desktop`, `Downloads`, `Library/Mobile Documents`, or `Library/CloudStorage` — `--allow-protected-paths` is the explicit override for operators who arranged access (e.g. MDM-granted FDA).
 
 ```bash
 # one-shot sync (validates, then temp + fsync + rename; skips when unchanged)
 node scripts/hermes-registry-sync.mjs sync \
-  --source "/path/to/Hyphen-Studio/outputs/registry.private.json" \
+  --source "/path/to/mirror/registry.private.json" \
   --destination "/path/to/project-data/<project>/business/registry.private.json"
 
 # dry-run: validate + plan, writes nothing
 node scripts/hermes-registry-sync.mjs sync --source ... --destination ... --dry-run
 
-# macOS LaunchAgent: install / remove / inspect (explicit commands only)
-node scripts/hermes-registry-sync.mjs install --source ... --destination ...   # plist + launchctl bootstrap
-node scripts/hermes-registry-sync.mjs install --source ... --destination ... --no-load   # plist only
-node scripts/hermes-registry-sync.mjs status --destination ...                 # last sync + agent state
-node scripts/hermes-registry-sync.mjs uninstall                                # bootout + remove plist
+# macOS LaunchAgent: stage tool + install / remove / inspect (explicit commands only)
+node scripts/hermes-registry-sync.mjs install --source <mirror> --destination <dest>   # stage + plist + bootstrap
+node scripts/hermes-registry-sync.mjs install --source <mirror> --destination <dest> --no-load   # stage + plist only
+node scripts/hermes-registry-sync.mjs status --destination <dest>                     # last sync + agent + staged tool
+node scripts/hermes-registry-sync.mjs uninstall                                       # bootout + plist + staged tool + config
 ```
 
-Path contract: `--source`/`HERMES_REGISTRY_SYNC_SOURCE` and `--destination`/`HERMES_REGISTRY_SYNC_DESTINATION` are **required and explicit-only** — the tool never infers the mini deploy data path from `hermes-projects.json` and has no baked-in fallback. Only the status file defaults: `<destination dir>/registry-sync-status.json` (override `--status`/`HERMES_REGISTRY_SYNC_STATUS`). `install` resolves just the operator's HOME and the current Node binary and bakes the explicit paths into `~/Library/LaunchAgents/com.hyphen.hermes-registry-sync.plist` (`RunAtLoad` + `StartInterval 300`); a sibling `registry-sync.lock` prevents overlapping runs. Both paths may also be passed for a one-off `sync` without the agent.
+Path contract: `--source`/`HERMES_REGISTRY_SYNC_SOURCE` and `--destination`/`HERMES_REGISTRY_SYNC_DESTINATION` are **required and explicit-only** — the tool never infers the mini deploy data path from `hermes-projects.json` and has no baked-in fallback. Only the status file defaults: `<destination dir>/registry-sync-status.json` (override `--status`/`HERMES_REGISTRY_SYNC_STATUS`). `install` resolves just the operator's HOME and the current Node binary, stages the tool, and bakes the explicit paths into `~/Library/LaunchAgents/com.hyphen.hermes-registry-sync.plist` (`RunAtLoad` + `StartInterval 300`); a sibling `registry-sync.lock` prevents overlapping runs (a lock records its pid so a late release can never steal a newer run's lock).
+
+Sync-paths config: `install` persists the explicit paths to `~/Library/Application Support/Hyphen/hermes-registry-sync/sync-paths.json` (0600, outside every repository — local-only by construction). The Studio export reads this config and mirrors to its `source`; `uninstall` removes it.
+
+Watchdog: `HERMES_REGISTRY_SYNC_TIMEOUT_MS` bounds the whole sync pass (default 60s). A wedged `open()` — protected path, dataless cloud file, dead mount — cannot be unwound (even `process.exit()` would hang joining the dead threadpool thread), so on timeout the tool records a bounded `sync_timeout` status and self-terminates with `SIGKILL` instead of leaving a zombie that blocks the next interval. Normal runs exit in milliseconds; timers are unref'd and cancelled on settle.
 
 Safety: source and destination symlinks are rejected; size, schema, and `sourceHash` are validated on every run before anything is written; the destination is replaced only via same-directory temp + fsync + `rename` at mode `0600`, so a failed run always preserves the last-known-good file. Each run also writes the allowlisted status JSON — `status` (`synced`/`unchanged`/`error`), `checkedAt`, `syncedAt`, `registryUpdatedAt`, `projectCount`, `errorCode` — with no business content, paths, hashes, or error text, and `sync` output itself stays path-free so launchd logs carry no local paths.
 
 The workspace header shows a read-only freshness pill fed by `GET /api/business/status` (admin session only): `사업 데이터 최신` when the registry loads and a recent clean sync confirms it, `사업 데이터 지연` when the registry loads but the sync witness is missing, errored, or older than ~10 minutes (`HERMES_BUSINESS_REGISTRY_STALE_MS`), and `사업 데이터 사용 불가` when the registry cannot be loaded. The endpoint returns only `{state, checkedAt, syncedAt, registryUpdatedAt, projectCount, errorCode}` — never paths, hashes, or registry content — and is not connected to the request queue, approvals, or the worker. Server-side the status file resolves from `HERMES_BUSINESS_REGISTRY_STATUS` or the sibling of `HERMES_BUSINESS_REGISTRY`.
 
-Rollback/verification: `status` prints the last recorded outcome and agent state (exit 1 when the last run errored); `uninstall` removes the agent and plist — the synced destination and status file are left in place untouched; to return to manual mode, uninstall the agent, pin `HERMES_BUSINESS_REGISTRY_EXPECTED_HASH`, and copy a verified export by hand.
+Rollback/verification: `status` prints the last recorded outcome, agent state, staged tool, and config presence (exit 1 when the last run errored); `uninstall` removes the agent, plist, staged tool copy, and sync-paths config — the synced destination and status file are left in place untouched; to return to manual mode, uninstall the agent, pin `HERMES_BUSINESS_REGISTRY_EXPECTED_HASH`, and copy a verified export by hand. Re-run `install` after repo updates to refresh the staged copy.
 
 ## Backup Readiness
 

@@ -28,14 +28,19 @@ Studio cockpit (studio.hyphen.it.com, admin scope)
        -> server-side validation in scripts/hermes-prefill.mjs
        -> editable composer draft after login -> manual submit -> normal lifecycle
 
-Studio business registry (outputs/registry.private.json)
-  -> scripts/hermes-registry-sync.mjs (host, LaunchAgent com.hyphen.hermes-registry-sync, 5 min)
+Studio business registry (outputs/registry.private.json, TCC-protected)
+  -> Studio export mirrors to Application Support staging source
+       (trigger: recorded sync-paths.json config from install)
+  -> staged hermes-registry-sync.mjs (host, LaunchAgent com.hyphen.hermes-registry-sync, 5 min)
        -> validate (symlink/size/schema/sourceHash fail-closed)
        -> temp + fsync + atomic rename into Hermes persistent data (0600)
        -> registry-sync-status.json (allowlisted outcome, sibling file)
+       -> sync_timeout watchdog: wedged open() -> bounded error + SIGKILL
   -> mini-server.mjs GET /api/business/status (admin session)
        -> freshness pill: 사업 데이터 최신 / 지연 / 사용 불가
 ```
+
+LaunchAgents cannot open() TCC-protected or cloud-backed paths (Documents, Desktop, Downloads, Mobile Documents, CloudStorage) — the syscall suspends forever, so install stages the tool into Application Support, refuses protected paths, and the plist references only staged/mirror paths.
 
 ```text
 created -> queued -> running -> done

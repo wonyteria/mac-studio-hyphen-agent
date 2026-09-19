@@ -66,12 +66,14 @@ async function writeSource(payload = exportPayload([project()])) {
   return sourceFile;
 }
 
-function runCli(args, env = {}) {
+function runCli(args, env = {}, spawnOptions = {}) {
   const result = spawnSync(process.execPath, [syncScript, ...args], {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    timeout: 30 * 1000,
+    ...spawnOptions,
   });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, signal: result.signal };
 }
 
 function syncArgs(extra = []) {
@@ -267,7 +269,7 @@ test("--expect-hash pins the source sourceHash and drift fails closed", async ()
   assert.equal(await lstat(driftDest).catch(() => null), null, "drift must never write the destination");
 });
 
-test("install --dry-run renders a plist with resolved node, script, and explicit paths", () => {
+test("install --dry-run renders a plist with resolved node, staged script, and explicit paths", () => {
   const run = runCli([
     "install",
     "--source", sourceFile,
@@ -279,9 +281,13 @@ test("install --dry-run renders a plist with resolved node, script, and explicit
   assert.match(run.stdout, /<key>RunAtLoad<\/key>/);
   assert.match(run.stdout, /<integer>300<\/integer>/);
   assert.ok(run.stdout.includes(process.execPath), "current node binary is baked in");
-  assert.ok(run.stdout.includes(syncScript), "script path is baked in");
+  // The plist must reference the staged copy — never the repo path, which a
+  // launchd child cannot open under a protected directory.
+  assert.match(run.stdout, /Application Support.*hermes-registry-sync\.mjs/);
+  assert.equal(run.stdout.includes(`<string>${syncScript}</string>`), false, "repo script path must not be baked in");
   assert.ok(run.stdout.includes(destFile), "explicit destination is baked in");
   assert.ok(run.stdout.includes("registry-sync-status.json"), "status path is baked in");
+  assert.match(run.stdout, /동기화 경로 설정/);
 });
 
 test("install without explicit paths fails closed with a usage error", () => {
@@ -476,7 +482,7 @@ test("uninstall reports whether the plist actually existed", async () => {
   const fakeHome = join(workDir, "fake-home");
   const plistDir = join(fakeHome, "Library", "LaunchAgents");
   await mkdir(plistDir, { recursive: true });
-  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/bin/false" };
+  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/usr/bin/false" };
   const absent = runCli(["uninstall"], env);
   assert.equal(absent.status, 0, absent.stderr);
   assert.match(absent.stdout, /plist가 없습니다/);
@@ -487,4 +493,97 @@ test("uninstall reports whether the plist actually existed", async () => {
   assert.equal(removed.status, 0, removed.stderr);
   assert.match(removed.stdout, /plist를 제거했습니다/);
   assert.equal(await lstat(plistPath).catch(() => null), null, "the plist must actually be gone");
+});
+
+test("a normal sync exits promptly with no lock or timer residue", async () => {
+  const quickDest = join(workDir, "quick-dest", "registry.private.json");
+  const started = Date.now();
+  const run = runCli(["sync", "--source", sourceFile, "--destination", quickDest], {}, { timeout: 10 * 1000 });
+  const elapsed = Date.now() - started;
+  assert.equal(run.signal, null, "the CLI must exit on its own, not be killed");
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(elapsed < 5000, `a finished sync must not wait out the watchdog (${elapsed}ms)`);
+  const entries = await readdir(join(workDir, "quick-dest"));
+  assert.equal(entries.includes("registry-sync.lock"), false, "the lock must be released");
+  assert.equal(entries.some((name) => name.includes(".tmp-")), false, "no temp residue");
+});
+
+test("a wedged fs call degrades to bounded sync_timeout instead of a zombie process", async () => {
+  const fifoDestDir = join(workDir, "fifo-dest");
+  await mkdir(fifoDestDir, { recursive: true });
+  // A FIFO at the lock path makes acquireLock's readFile block forever —
+  // the watchdog must fire, report a bounded error, and exit the process.
+  spawnSync("mkfifo", [join(fifoDestDir, "registry-sync.lock")]);
+  const run = runCli(
+    ["sync", "--source", sourceFile, "--destination", join(fifoDestDir, "registry.private.json")],
+    { HERMES_REGISTRY_SYNC_TIMEOUT_MS: "2000" },
+    { timeout: 20 * 1000 },
+  );
+  // The watchdog self-terminates with SIGKILL: a wedged threadpool open()
+  // cannot be unwound — even process.exit() would join the dead thread and
+  // hang. SIGKILL before the harness timeout proves the bound works.
+  assert.equal(run.signal, "SIGKILL");
+  assert.match(run.stderr, /동기화를 거부했습니다 \[sync_timeout\]/);
+  assert.equal(run.stderr.includes(workDir), false, "bounded output must not leak paths");
+  const status = JSON.parse(await readFile(join(fifoDestDir, SYNC_STATUS_FILENAME), "utf8"));
+  assert.equal(status.errorCode, "sync_timeout");
+  assert.deepEqual(
+    (await readdir(fifoDestDir)).sort(),
+    ["registry-sync-status.json", "registry-sync.lock"].sort(),
+    "the wedged lock and the recorded error are the only artifacts — no temp or half-written files",
+  );
+});
+
+test("install refuses paths a launchd child cannot open", async () => {
+  const fakeHome = join(workDir, "guard-home");
+  await mkdir(join(fakeHome, "Documents"), { recursive: true });
+  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/usr/bin/false" };
+  const run = runCli(
+    ["install", "--source", join(fakeHome, "Documents", "registry.private.json"), "--destination", destFile, "--dry-run"],
+    env,
+  );
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /보호 경로/);
+  const plistPath = join(fakeHome, "Library", "LaunchAgents", "com.hyphen.hermes-registry-sync.plist");
+  assert.equal(await lstat(plistPath).catch(() => null), null, "no plist may be written on refusal");
+  // The explicit override keeps an operator with arranged access in charge.
+  const allowed = runCli(
+    [
+      "install", "--source", join(fakeHome, "Documents", "registry.private.json"),
+      "--destination", destFile, "--dry-run", "--allow-protected-paths",
+    ],
+    env,
+  );
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stderr, /보호 경로를 명시적으로 허용/);
+});
+
+test("install stages a runnable tool copy and records the sync-paths config", async () => {
+  const fakeHome = join(workDir, "install-home");
+  const mirror = join(fakeHome, "Library", "Application Support", "mirror", "registry.private.json");
+  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/usr/bin/false" };
+  const run = runCli(["install", "--source", mirror, "--destination", destFile, "--no-load"], env);
+  assert.equal(run.status, 0, run.stderr);
+  const stageDir = join(fakeHome, "Library", "Application Support", "Hyphen", "hermes-registry-sync", "tool");
+  for (const name of ["hermes-registry-sync.mjs", "hermes-business-registry.mjs"]) {
+    const staged = join(stageDir, name);
+    assert.equal(await readFile(staged, "utf8"), await readFile(join(repoRoot, "scripts", name), "utf8"), `${name} must be staged verbatim`);
+    assert.equal((await stat(staged)).mode & 0o777, 0o600);
+  }
+  const plistPath = join(fakeHome, "Library", "LaunchAgents", "com.hyphen.hermes-registry-sync.plist");
+  const plist = await readFile(plistPath, "utf8");
+  assert.ok(plist.includes(join(stageDir, "hermes-registry-sync.mjs")), "plist runs the staged script");
+  assert.equal(plist.includes(syncScript), false, "plist never references the repo script");
+  const configPath = join(fakeHome, "Library", "Application Support", "Hyphen", "hermes-registry-sync", "sync-paths.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(config.source, mirror);
+  assert.equal(config.destination, destFile);
+  assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+  // uninstall removes the whole install footprint truthfully.
+  const gone = runCli(["uninstall"], env);
+  assert.equal(gone.status, 0, gone.stderr);
+  assert.match(gone.stdout, /스테이징된 도구를 제거했습니다/);
+  assert.match(gone.stdout, /동기화 경로 설정을 제거했습니다/);
+  assert.equal(await lstat(configPath).catch(() => null), null);
+  assert.equal(await lstat(stageDir).catch(() => null), null);
 });

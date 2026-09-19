@@ -413,6 +413,7 @@ export const SYNC_ERROR_CODES = new Set([
   "destination_unreadable",
   "destination_dir_unusable",
   "write_failed",
+  "sync_timeout",
   "sync_error",
 ]);
 // checkedAt may sit slightly in the future under normal clock drift; beyond
