@@ -79,11 +79,12 @@ const verifiedProject = {
 };
 
 test("buildEvidenceAudit is deterministic and mirrors the current registry shape", () => {
+  // The live registry: 36 hyphen-core projects, every one status unknown /
+  // evidence unmet / owner unset — plus 2 excluded 29sfilm entries.
   const projects = [];
-  for (let index = 0; index < 35; index += 1) {
+  for (let index = 0; index < 36; index += 1) {
     projects.push(auditProject({ id: `core-${String(index).padStart(2, "0")}`, name: `코어 ${index}` }));
   }
-  projects.push(verifiedProject);
   projects.push(auditProject({ id: "film-a", organization: "29sfilm" }));
   projects.push(auditProject({ id: "film-b", organization: "29sfilm" }));
   const registry = auditRegistry(projects);
@@ -103,26 +104,45 @@ test("buildEvidenceAudit is deterministic and mirrors the current registry shape
     assert.notEqual(item.projectId.startsWith("film-"), true, "29sfilm projects must not appear in items");
   }
 
-  // The current-registry aggregate: status unknown, evidence unmet, owner unset.
-  // (verified-proj is operational/verified/owned, so each gap counts 35 of 36.)
-  assert.equal(audit.coverage.statusUnknown, 35);
-  assert.equal(audit.coverage.evidenceUnverified, 35);
-  assert.equal(audit.coverage.ownerMissing, 35);
-  assert.equal(audit.summary.projectsNeedingReview, 35);
-  assert.equal(audit.summary.fieldGaps.status, 35);
-  assert.equal(audit.summary.fieldGaps.owner, 35);
-  assert.equal(audit.summary.fieldGaps.revenue, 35);
-  assert.equal(audit.summary.pendingEvidence, 35);
-  assert.equal(audit.summary.byPriority.high, 35);
+  // The current-registry aggregate, exactly: all 36 core projects carry
+  // status unknown, evidence unmet, and owner unset.
+  assert.equal(audit.coverage.statusUnknown, 36);
+  assert.equal(audit.coverage.evidenceUnverified, 36);
+  assert.equal(audit.coverage.ownerMissing, 36);
+  assert.equal(audit.summary.projectsNeedingReview, 36);
+  assert.equal(audit.summary.fieldGaps.status, 36);
+  assert.equal(audit.summary.fieldGaps.owner, 36);
+  assert.equal(audit.summary.fieldGaps.revenue, 36);
+  assert.equal(audit.summary.pendingEvidence, 36);
+  assert.equal(audit.summary.byPriority.high, 36);
   assert.equal(audit.summary.byPriority.medium + audit.summary.byPriority.low, 0);
 
   // Identical input must produce byte-identical output.
   assert.deepEqual(buildEvidenceAudit(registry), audit);
 });
 
+test("a fully verified project produces no review item", () => {
+  const audit = buildEvidenceAudit(auditRegistry([auditProject(), verifiedProject]));
+  assert.equal(audit.summary.projectsNeedingReview, 1);
+  assert.equal(audit.items.length, 1);
+  assert.equal(audit.items[0].projectId, "alpha");
+  assert.equal(audit.items.some((item) => item.projectId === "verified-proj"), false);
+});
+
 test("audit items expose only the allowlisted fields and no sensitive material", () => {
   const audit = buildEvidenceAudit(
-    auditRegistry([auditProject(), verifiedProject, auditProject({ id: "film", organization: "29sfilm" })]),
+    auditRegistry([
+      auditProject({
+        nextEvidence: [
+          // Operator-authored asks may embed private detail — the audit must
+          // reduce them to a count, never copy the text.
+          "백업 경로 /Users/Example/private/secrets 확인",
+          "token sk-abc123def456 재발급 여부 확인",
+        ],
+      }),
+      verifiedProject,
+      auditProject({ id: "film", organization: "29sfilm" }),
+    ]),
   );
   const allowedItemKeys = new Set([
     "projectId",
@@ -144,9 +164,11 @@ test("audit items expose only the allowlisted fields and no sensitive material",
     }
   }
   const serialized = JSON.stringify(audit);
-  // No raw registry details: evidence refs, local paths, repo URLs, and
-  // secret-shaped values must never cross into the audit output.
+  // No raw registry details: evidence refs, nextEvidence text, local paths,
+  // repo URLs, and secret-shaped values must never cross into the output.
   assert.equal(serialized.includes("docs/proof.md"), false, "evidence refs must not leak");
+  assert.equal(serialized.includes("/Users/Example/private"), false, "nextEvidence local paths must not leak");
+  assert.equal(serialized.includes("sk-abc123def456"), false, "secret-shaped tokens must not leak");
   assert.equal(serialized.includes("/srv/private/path"), false, "local paths must not leak");
   assert.equal(serialized.includes("git.example"), false, "repository URLs must not leak");
   assert.equal(serialized.includes("ops-owner"), false, "owner names must not leak");
@@ -310,7 +332,10 @@ test("studio_evidence_audit POST completes synchronously — never queued for th
   const request = created.data.request;
   assert.equal(request.type, "studio_evidence_audit");
   assert.equal(request.status, "done", "audit must finish in the request handler, not queue");
-  assert.ok(Number.isFinite(request.completed_at), "completed synchronously — no worker round-trip");
+  assert.ok(
+    Number.isFinite(request.completed_at) && request.completed_at >= request.created_at,
+    "completed synchronously — no worker round-trip (ms boundary can differ)",
+  );
   assert.equal(request.claimed_at, null, "worker never claims it");
   assert.equal(request.lease_expires_at, null);
   assert.ok(request.result.includes("사업 현황 갱신 점검"));

@@ -800,8 +800,6 @@ export const EVIDENCE_AUDIT_MAX_ITEMS = 50;
 export const EVIDENCE_AUDIT_PRIORITIES = new Set(["high", "medium", "low"]);
 
 const AUDIT_NAME_MAX_CHARS = 80;
-const AUDIT_ACTION_MAX_CHARS = 200;
-const AUDIT_MAX_ACTIONS = 14;
 
 // Registry strings are unbounded: flatten to a single line and cap the length
 // so no value can consume the output budget or inject extra lines.
@@ -852,9 +850,10 @@ function compareAuditItems(a, b) {
 
 // Builds the read-only evidence audit. Pure and deterministic: identical
 // registry input always produces identical output — no wall-clock time,
-// environment, or randomness. Items expose only the allowlisted fields;
-// raw registry JSON, evidence refs, local paths, and secret-like values are
-// never copied into the result.
+// environment, or randomness. Items expose only the allowlisted fields, and
+// actions are fixed Korean phrases plus a pending-ask count — raw registry
+// JSON, evidence refs, nextEvidence text, local paths, and secret-like
+// values are never copied into the result.
 export function buildEvidenceAudit(registry) {
   const { hyphen, excludedOrganizations } = hyphenCoreSplit(registry);
   const coverage = registryCoverage(registry, hyphen, excludedOrganizations);
@@ -873,15 +872,12 @@ export function buildEvidenceAudit(registry) {
 
     const priority = auditPriority(project);
     byPriority[priority] += 1;
+    // nextEvidence entries are operator-authored free text and may contain
+    // local paths or other private detail — the audit never copies them. A
+    // fixed count phrase stands in for the recorded asks; the operator opens
+    // Studio to see them.
     const actions = missing.map(({ action }) => action);
-    for (const ask of project.nextEvidence) {
-      actions.push(auditText(ask, AUDIT_ACTION_MAX_CHARS));
-    }
-    if (actions.length > AUDIT_MAX_ACTIONS) {
-      const overflow = actions.length - AUDIT_MAX_ACTIONS + 1;
-      actions.length = AUDIT_MAX_ACTIONS - 1;
-      actions.push(`… 외 ${overflow}건`);
-    }
+    if (pending > 0) actions.push(`등록된 확인 요청 ${pending}건을 확인`);
     items.push({
       projectId: auditText(project.id, AUDIT_NAME_MAX_CHARS),
       projectName: auditText(project.name, AUDIT_NAME_MAX_CHARS),
