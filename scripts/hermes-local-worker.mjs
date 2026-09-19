@@ -30,8 +30,9 @@ const miniVercelWorkspaceRoot =
 const persistenceBackupRoot =
   process.env.HERMES_PERSISTENCE_BACKUP_DIR || join(runtimeRoot, "persistence");
 const ollamaUrl = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
-const localHermesModel =
-  process.env.HERMES_LOCAL_MODEL || "hermes-4.3-admin-fast-iq4xs-32k:latest";
+// Default local model for routine low-risk chat/routing — must match a real
+// `ollama list` entry on the Mac Studio (local-small/local-large/local-long).
+const localModel = process.env.HERMES_LOCAL_MODEL || "local-small:latest";
 const nodeCurrentBin = join(homedir(), ".local", "node-current", "bin");
 const workerPath = [
   nodeCurrentBin,
@@ -925,6 +926,7 @@ export async function reportProviderReadiness() {
       body: JSON.stringify({
         codex: { state: probe.code === 0 ? "ready" : "unavailable" },
         devin: { state: devinConfigured ? "configured" : "unavailable" },
+        local_llm: { state: (await localModelPresent()) ? "ready" : "unavailable" },
       }),
     });
   } catch {
@@ -1114,6 +1116,27 @@ async function ollamaAvailable() {
   }
 }
 
+// The configured model must actually exist in the Ollama catalog — a running
+// server with a missing model is a truthful failure, never silent readiness.
+async function localModelPresent() {
+  try {
+    const response = await fetch(new URL("/api/tags", ollamaUrl), {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return false;
+    const tags = await response.json();
+    const names = new Set(
+      (Array.isArray(tags?.models) ? tags.models : [])
+        .map((entry) => String(entry?.name || entry?.model || "").toLowerCase())
+        .filter(Boolean),
+    );
+    const wanted = String(localModel).toLowerCase();
+    return names.has(wanted) || names.has(`${wanted}:latest`);
+  } catch {
+    return false;
+  }
+}
+
 async function ensureOllamaServer() {
   if (await ollamaAvailable()) return;
   await new Promise((resolvePromise, reject) => {
@@ -1143,12 +1166,22 @@ async function ensureOllamaServer() {
   throw new Error("Ollama 서버가 30초 안에 시작되지 않았습니다.");
 }
 
+// Server up + configured model present — the gate every local-LLM path uses.
+async function ensureLocalModel() {
+  await ensureOllamaServer();
+  if (!(await localModelPresent())) {
+    throw new Error(
+      `로컬 LLM 모델(${localModel})이 Ollama에 없습니다. ollama list로 설치된 모델을 확인하고 HERMES_LOCAL_MODEL을 맞춰주세요.`,
+    );
+  }
+}
+
 async function ollamaCompletion(messages, options = {}) {
   const response = await fetch(new URL("/api/chat", ollamaUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: localHermesModel,
+      model: localModel,
       messages,
       ...(options.format ? { format: options.format } : {}),
       options: {
@@ -1164,21 +1197,21 @@ async function ollamaCompletion(messages, options = {}) {
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(`Hermes 4.3 응답 실패: ${response.status} ${text}`);
+  if (!response.ok) throw new Error(`로컬 LLM(${localModel}) 응답 실패: ${response.status} ${text}`);
   const content = String(data.message?.content || "").trim();
-  if (!content) throw new Error("Hermes 4.3이 빈 응답을 반환했습니다.");
+  if (!content) throw new Error(`로컬 LLM(${localModel})이 빈 응답을 반환했습니다.`);
   return content;
 }
 
 async function hermesChat(request, reporter) {
-  await reporter.update("hermes_start", "Hermes 4.3 로컬 모델을 준비하고 있습니다.");
-  await ensureOllamaServer();
-  await reporter.update("hermes_chat", "Hermes 4.3이 한국어 답변을 작성하고 있습니다.");
+  await reporter.update("hermes_start", `로컬 LLM(${localModel})을 준비하고 있습니다.`);
+  await ensureLocalModel();
+  await reporter.update("hermes_chat", "로컬 LLM이 한국어 답변을 작성하고 있습니다.");
   return ollamaCompletion([
     {
       role: "system",
       content:
-        "너는 Mac Studio 운영 콘솔의 Hermes 4.3 대화 계층이다. 한국어로 짧고 정확하게 답한다. 이 대화 모드에서는 실제 명령이나 파일 변경을 실행하지 않았다고 명확히 구분한다. 실행이 필요하면 사용자가 Mac 상태, 프로젝트 점검, 파일 정리, Hermes 운영 요청, Codex 개발 요청 중 맞는 요청 종류를 선택하도록 안내한다. 개발 구현은 Codex 개발 요청으로 위임한다.",
+        "너는 Mac Studio 운영 콘솔의 로컬 LLM 대화 계층이다. 한국어로 짧고 정확하게 답한다. 이 대화 모드에서는 실제 명령이나 파일 변경을 실행하지 않았다고 명확히 구분한다. 실행이 필요하면 사용자가 Mac 상태, 프로젝트 점검, 파일 정리, Hermes 운영 요청, Codex 개발 요청 중 맞는 요청 종류를 선택하도록 안내한다. 개발 구현은 Codex 개발 요청으로 위임한다.",
     },
     { role: "user", content: String(request.body || "").slice(0, 8000) },
   ]);
@@ -1219,7 +1252,7 @@ export function parseHermesDecision(value) {
       // Try the next JSON-shaped candidate.
     }
   }
-  throw new Error("Hermes 4.3 운영 판단을 안전한 JSON으로 해석하지 못했습니다.");
+  throw new Error("로컬 LLM 운영 판단을 안전한 JSON으로 해석하지 못했습니다.");
 }
 
 export function classifyObviousRequest(value) {
@@ -1284,8 +1317,8 @@ async function routeHermes(request, reporter, approved = false) {
     "hermes_start",
     approved ? "승인된 Hermes 운영 에이전트를 준비하고 있습니다." : "Hermes 자동 판단을 준비하고 있습니다.",
   );
-  await ensureOllamaServer();
-  await reporter.update("hermes_route", "Hermes 4.3이 요청을 허용된 운영 작업으로 분류하고 있습니다.");
+  await ensureLocalModel();
+  await reporter.update("hermes_route", "로컬 LLM이 요청을 허용된 운영 작업으로 분류하고 있습니다.");
   const rawDecision = await ollamaCompletion(
     [
       {
@@ -1314,7 +1347,7 @@ async function executeHermesDecision(decision, request, reporter) {
   else if (decision.action === "file_cleanup") result = await fileCleanupReport(request);
   else if (decision.action === "development") result = await developmentPipeline(request, reporter);
   else result = decision.message || "이 요청은 현재 Hermes 운영 허용 목록으로 실행할 수 없습니다.";
-  return [`Hermes 4.3 판단: ${decision.reason || decision.action}`, "", result].join("\n");
+  return [`로컬 LLM 판단: ${decision.reason || decision.action}`, "", result].join("\n");
 }
 
 async function runHermes(request, reporter) {
@@ -1347,7 +1380,7 @@ async function runAuto(request, reporter) {
   });
   if (planned.deferred) return { deferred: true };
   if (decision.action === "respond") {
-    return [`Hermes 4.3 판단: ${decision.reason || "대화 응답"}`, "", decision.message].join("\n");
+    return [`로컬 LLM 판단: ${decision.reason || "대화 응답"}`, "", decision.message].join("\n");
   }
   return executeHermesDecision(decision, request, reporter);
 }

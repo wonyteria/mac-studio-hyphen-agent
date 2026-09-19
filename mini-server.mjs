@@ -616,7 +616,7 @@ const html = `<!doctype html>
                 <option value="studio_priorities">전체 Studio 우선순위</option>
                 <option value="studio_blockers">전체 Studio 막힌 프로젝트</option>
                 <option value="studio_evidence_audit">사업 현황 갱신 점검</option>
-                <option value="hermes_chat">Hermes 4.3 대화</option>
+                <option value="hermes_chat">로컬 LLM 대화</option>
                 <option value="mac_status">Mac 상태</option>
                 <option value="deployment_status">배포 상태</option>
                 <option value="project_inspect">프로젝트 점검</option>
@@ -655,7 +655,7 @@ const html = `<!doctype html>
   <script>window.__HERMES_PREFILL__ = __PREFILL_JSON__;</script>
   <script>
     const $ = (id) => document.getElementById(id);
-    const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", studio_evidence_audit: "사업 현황 갱신 점검", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
+    const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", studio_evidence_audit: "사업 현황 갱신 점검", hermes_chat: "로컬 LLM 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "로컬 LLM 대화" };
     const studioScopeTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview", "studio_evidence_audit"]);
     const statusLabels = { queued: "대기 중", approval_required: "승인 필요", running: "실행 중", done: "완료", failed: "실패", canceled: "취소됨" };
     const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
@@ -841,6 +841,7 @@ const html = `<!doctype html>
         readinessRow("Mac Studio 워커", integrations.worker && integrations.worker.state) +
         readinessRow("Codex 실행자", executors.codex && executors.codex.state, readinessReasonLabels[executors.codex && executors.codex.reason]) +
         readinessRow("Devin 실행자", executors.devin && executors.devin.state, readinessReasonLabels[executors.devin && executors.devin.reason]) +
+        readinessRow("로컬 LLM", executors.local_llm && executors.local_llm.state) +
         readinessRow("Discord", integrations.discord && integrations.discord.state, readinessReasonLabels[integrations.discord && integrations.discord.reason]) +
         readinessRow("백업", integrations.backup && integrations.backup.state, readinessReasonLabels[integrations.backup && integrations.backup.reason]) +
         readinessRow("프로젝트 능력", coverage.total ? "ok" : "unknown", coverageNote) +
@@ -2280,6 +2281,7 @@ createServer(async (req, res) => {
           reportedAt: now,
           codex: providerState(body.codex),
           devin: providerState(body.devin),
+          local_llm: providerState(body.local_llm),
         };
       });
       return send(res, 200, { ok: true });
@@ -2324,6 +2326,7 @@ createServer(async (req, res) => {
           reportedAt: reported?.reportedAt || null,
           codex: reported?.codex || { state: "unknown" },
           devin: reported?.devin || { state: "unknown" },
+          local_llm: reported?.local_llm || { state: "unknown" },
         },
         discord: { state: discord.state, ...(discord.reason ? { reason: discord.reason } : {}) },
         backup: { state: backup.state, ...(backup.reason ? { reason: backup.reason } : {}) },

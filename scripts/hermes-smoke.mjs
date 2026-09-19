@@ -121,9 +121,16 @@ async function checkQueue() {
 }
 
 async function checkProviders() {
-  const { codex, devin } = await providerReadiness();
-  const worst = [codex.state, devin.state].includes("unavailable") ? "degraded" : "ok";
-  return check("providers", worst, { codex: codex.state, devin: devin.state });
+  const { codex, devin, local_llm } = await providerReadiness();
+  const states = [codex.state, devin.state, local_llm.state];
+  const worst = states.includes("unavailable") ? "degraded" : "ok";
+  return check("providers", worst, {
+    codex: codex.state,
+    devin: devin.state,
+    local_llm: local_llm.state,
+    ...(local_llm.reason ? { local_llm_reason: local_llm.reason } : {}),
+    ...(local_llm.model ? { local_llm_model: local_llm.model } : {}),
+  });
 }
 
 function checkDiscord() {

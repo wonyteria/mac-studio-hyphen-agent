@@ -16,6 +16,10 @@ export const EXECUTOR_TYPES = ["codex", "devin"];
 export const PROVIDER_STATES = ["ready", "configured", "unavailable"];
 
 export const DEVIN_DEFAULT_API_URL = "https://api.devin.ai";
+export const OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434";
+// The on-device model for routine low-risk chat/routing — must match a real
+// `ollama list` entry on the Mac Studio (local-small/local-large/local-long).
+export const LOCAL_MODEL_DEFAULT = "local-small:latest";
 
 export function normalizeExecutor(value) {
   return EXECUTOR_TYPES.includes(value) ? value : "codex";
@@ -75,12 +79,45 @@ export function devinReadiness({ env = process.env } = {}) {
   return { provider: "devin", state: "configured", apiHost: host };
 }
 
-export async function providerReadiness({ env = process.env, run = runner() } = {}) {
-  const [codex, devin] = await Promise.all([
+// Local-LLM readiness = the Ollama server answers AND the configured model is
+// actually present in its catalog. A reachable server without the model is
+// unavailable (model_missing) — a missing model is never "ready". The model
+// name is a config value, not a secret, and is reported for diagnostics.
+export async function localLlmReadiness({ env = process.env, fetchImpl = fetch } = {}) {
+  const base = env.OLLAMA_URL || OLLAMA_DEFAULT_URL;
+  const model = env.HERMES_LOCAL_MODEL || LOCAL_MODEL_DEFAULT;
+  let tags;
+  try {
+    const response = await fetchImpl(new URL("/api/tags", base), {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      return { provider: "local_llm", state: "unavailable", reason: "server_error", model };
+    }
+    tags = await response.json();
+  } catch {
+    return { provider: "local_llm", state: "unavailable", reason: "server_unreachable", model };
+  }
+  const names = new Set(
+    (Array.isArray(tags?.models) ? tags.models : [])
+      .map((entry) => String(entry?.name || entry?.model || "").toLowerCase())
+      .filter(Boolean),
+  );
+  const wanted = String(model).toLowerCase();
+  const tagged = wanted.includes(":") ? wanted : `${wanted}:latest`;
+  if (!names.has(wanted) && !names.has(tagged)) {
+    return { provider: "local_llm", state: "unavailable", reason: "model_missing", model };
+  }
+  return { provider: "local_llm", state: "ready", model };
+}
+
+export async function providerReadiness({ env = process.env, run = runner(), fetchImpl = fetch } = {}) {
+  const [codex, devin, localLlm] = await Promise.all([
     codexReadiness({ env, run }),
     Promise.resolve(devinReadiness({ env })),
+    localLlmReadiness({ env, fetchImpl }),
   ]);
-  return { codex, devin };
+  return { codex, devin, local_llm: localLlm };
 }
 
 // Devin API request/status/result contract — official v3 organization scope

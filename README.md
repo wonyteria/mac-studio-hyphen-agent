@@ -16,7 +16,7 @@ The production deployment at `https://hermes.hyphen.it.com` currently runs the c
 - visible project context on the active request and a plain-Korean scope line in the composer (범위: 전체 Hyphen Studio vs 프로젝트: <name>)
 - request queue persisted to the mini deploy data volume
 - local LaunchAgent worker polling the queue from the Mac Studio
-- on-demand local Hermes 4.3 chat with a memory-balanced 16K context and short idle retention
+- on-demand local LLM chat with a memory-balanced 16K context and short idle retention
 - natural-language auto routing that runs safe checks immediately and pauses mutations for approval
 - fast Korean routing for obvious status/development/deploy/cleanup requests without loading the 36B model
 - immediate safe checks for Mac/deployment/project status
@@ -28,8 +28,8 @@ The production deployment at `https://hermes.hyphen.it.com` currently runs the c
 ## Request Types
 
 - `auto`: default mode; Hermes classifies plain Korean into chat, status, inspection, cleanup, redeploy, or development
-- `hermes_chat`: tool-free Korean chat through local Hermes 4.3; cannot change the Mac
-- `hermes_ops`: after approval, let Hermes 4.3 route the request into a fixed set of verified operations
+- `hermes_chat`: tool-free Korean chat through the local LLM; cannot change the Mac
+- `hermes_ops`: after approval, let the local LLM route the request into a fixed set of verified operations
 - `mac_status`: collect machine status through deterministic native commands without model latency
 - `deployment_status`: inspect mini deploy state and Docker container for a registered project
 - `project_inspect`: summarize Git status, recent commits, and running container
@@ -236,4 +236,4 @@ node scripts/hermes-smoke.mjs --mutation-canary            # fixture only
 
 Hermes does not expose arbitrary shell execution from the website. In the default auto mode, the model only chooses a fixed operation enum. Safe inspection jobs continue immediately; cleanup, code changes, and deployment-changing jobs return to `approval_required` before any side effect. A canceled or failed safe request can be queued again, while a mutation retry requires fresh approval. The worker, not the model, owns command arguments and filesystem boundaries. Claim tokens and heartbeats prevent an old or duplicated worker from completing another worker's request.
 
-The worker starts Ollama only when a Hermes model request arrives. It limits the server to one loaded model and one parallel generation, uses the `hermes-4.3-admin-fast-iq4xs-32k` quantization already stored on the Mac Studio with a 16K runtime context, and lets the model unload after two idle minutes. This keeps routine status requests fast and avoids permanently reserving roughly 28 GB for the model and context cache.
+The worker starts Ollama only when a local-model request arrives. It limits the server to one loaded model and one parallel generation, defaults to `local-small:latest` for routine low-risk work (override with `HERMES_LOCAL_MODEL`; it must match a real `ollama list` entry), and lets the model unload after two idle minutes. Before any chat/routing call the worker verifies the configured model is actually present in the Ollama catalog — a missing model fails truthfully and reports `local_llm: unavailable` in readiness instead of pretending to be ready.

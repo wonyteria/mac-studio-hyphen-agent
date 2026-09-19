@@ -97,7 +97,7 @@ test("renders the production Hyphen Studio Agent shell", async () => {
   assert.match(html, /id="project"/);
   assert.match(html, /<option value="auto">자동 판단<\/option>/);
   assert.match(html, /<option value="studio_evidence_audit">사업 현황 갱신 점검<\/option>/);
-  assert.match(html, /Hermes 4\.3 대화/);
+  assert.match(html, /로컬 LLM 대화/);
   assert.match(html, /Hermes 운영 요청/);
   assert.match(html, /<option value="development">개발 요청<\/option>/);
   assert.match(html, /id="executorField" hidden/);

@@ -22,6 +22,7 @@ function runSmoke(args, env = {}) {
         DISCORD_USER_IDS: "",
         DEVIN_API_KEY: "",
         DEVIN_ORG_ID: "",
+        OLLAMA_URL: "http://127.0.0.1:1",
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -49,6 +50,10 @@ test("read-only smoke emits the full check list in JSON", async () => {
   assert.equal(report.checks.find((check) => check.name === "backup").reason, "destination_missing");
   assert.equal(report.checks.find((check) => check.name === "projects").state, "ok");
   assert.equal(report.checks.find((check) => check.name === "projects").total, 26);
+  const providers = report.checks.find((check) => check.name === "providers");
+  assert.equal(providers.local_llm, "unavailable", "a missing/unreachable local model is never ready");
+  assert.equal(providers.local_llm_reason, "server_unreachable");
+  assert.equal(providers.local_llm_model, "local-small:latest");
   assert.equal(stdout.includes("/Users/"), false, "report stays path-free");
   assert.equal(code, 1, "degraded overall exits 1");
 });

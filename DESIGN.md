@@ -9,7 +9,7 @@
 ## Product model
 - Hyphen Studio is the project cockpit where the owner decides direction. This repository is the **Hyphen Studio Agent** — the execution and evidence surface that runs on the Mac Studio.
 - The owner chooses a registered project, asks in natural Korean, sees the fast System 1 observation, understands whether approval is needed, follows execution, and inspects the outcome without technical jargon.
-- Evidence flow: Studio cockpit (intent) -> agent workspace (request queue + chat) -> System 1 observation (`빠른 판단`, observational only) -> System 2 execution (worker / Hermes 4.3 / Codex) -> deterministic verification -> result + evidence back in the workspace.
+- Evidence flow: Studio cockpit (intent) -> agent workspace (request queue + chat) -> System 1 observation (`빠른 판단`, observational only) -> System 2 execution (worker / local LLM / Codex) -> deterministic verification -> result + evidence back in the workspace.
 - System 1 never decides execution. Its shadow observation is advisory evidence only; classification, approval gates, and worker dispatch remain deterministic and unchanged.
 
 ## Brand
@@ -97,7 +97,7 @@
 ## Implementation constraints
 - Framework/styling system: production route is the self-contained Node HTTP server in `mini-server.mjs`; React/vinext files are not the active deployment surface.
 - Design-token constraints: CSS custom properties in the embedded runtime page.
-- Performance constraints: no heavy frontend bundle required for production console; worker avoids local LLM for status/deploy checks, runs the Hermes 4.3 quantization with a measured 16K context only for chat/approved agent work, and invokes Codex only for approved development work.
+- Performance constraints: no heavy frontend bundle required for production console; worker avoids local LLM for status/deploy checks, runs the configured local model with a measured 16K context only for chat/approved agent work, and invokes Codex only for approved development work.
 - Evidence constraints: `/api/system1/summary` is admin-only, read-only, and makes no external calls. Its semantics are fixed: `totalEligibleRequests` counts every valid stored request, `observedOk`/`observedError` count requests carrying the bounded `system1_shadow` marker (an error marker still counts as observed), `coverageRate` = observed / eligible (traffic coverage, `0` when empty), and route/policy/abstained aggregates use `status === "ok"` records only. The response is a strict count allowlist — no ids, content, timestamps, features, or paths.
 - Compatibility constraints: Docker runtime on Node 22 Alpine; Mac Studio worker launched by LaunchAgent from `~/.local/share/hermes-ops`.
 - Test/screenshot expectations: API smoke, Docker build, production curl smoke; browser screenshot when visual fidelity is the primary task.

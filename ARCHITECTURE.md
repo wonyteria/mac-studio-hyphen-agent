@@ -15,8 +15,8 @@ Browser
 Mac Studio LaunchAgent
   -> hermes-local-worker.mjs
        -> native macOS status commands
-       -> Ollama -> Hermes 4.3 36B IQ4_XS (on demand, tool-free chat)
-       -> Hermes 4.3 operation router -> fixed worker operation allowlist
+       -> Ollama -> configured local model (on demand, tool-free chat)
+       -> local-LLM operation router -> fixed worker operation allowlist
        -> registered local Git repositories
        -> Codex CLI (workspace-write, secrets scrubbed)
        -> Git remote
