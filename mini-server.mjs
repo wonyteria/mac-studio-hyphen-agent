@@ -655,11 +655,22 @@ const html = `<!doctype html>
     };
     const capabilityGuidanceFallback = "선택한 프로젝트에는 이 작업이 연결되어 있지 않습니다. 이 작업을 지원하는 프로젝트를 선택해주세요.";
     const capabilityGatedTypes = ["deployment_status", "project_inspect", "redeploy", "development"];
+    const capabilityReasonLabels = {
+      repo_unset: "로컬 저장소 미등록",
+      repo_unresolved: "저장소 경로를 찾지 못함",
+      repo_not_git: "Git 저장소가 아님",
+      remote_missing: "github 일치 리모트 없음",
+      branch_unset: "배포 브랜치 미등록",
+      branch_missing: "로컬 ref에 브랜치 없음",
+      remote_unreachable: "리모트 확인 실패",
+      branch_remote_missing: "리모트에 브랜치 없음",
+    };
     let current = null;
     let composingNew = false;
     let pollTimer = null;
     let projectNames = {};
     let projectCapabilities = {};
+    let projectReasons = {};
     let prefillApplied = false;
     let connState = null;
     let bizState = null;
@@ -717,8 +728,9 @@ const html = `<!doctype html>
         setConn(true);
         projectNames = Object.fromEntries(projects.map((project) => [project.id, project.name]));
         projectCapabilities = Object.fromEntries(projects.map((project) => [project.id, project.capabilities || []]));
+        projectReasons = Object.fromEntries(projects.map((project) => [project.id, project.capabilityReason || null]));
         const selectedProject = $("project").value;
-        $("project").innerHTML = projects.map((project) => '<option value="' + esc(project.id) + '">' + esc(project.name) + '</option>').join("");
+        $("project").innerHTML = projects.map((project) => '<option value="' + esc(project.id) + '">' + esc(project.name) + (project.capabilityReason ? " · 상태 조회만" : "") + '</option>').join("");
         if (projects.some((project) => project.id === selectedProject)) $("project").value = selectedProject;
         refreshPresetGuidance();
         applyHandoffPrefill();
@@ -840,7 +852,8 @@ const html = `<!doctype html>
           : "프로젝트: " + (projectNames[project] || "선택 없음");
       }
       if (capabilityGatedTypes.includes(type) && project && !capabilities.includes(type)) {
-        el.textContent = capabilityGuidance[type] || capabilityGuidanceFallback;
+        const reason = capabilityReasonLabels[projectReasons[project]];
+        el.textContent = reason ? reason + " — " + (capabilityGuidance[type] || capabilityGuidanceFallback) : capabilityGuidance[type] || capabilityGuidanceFallback;
         el.dataset.guide = "1";
       } else if (studioScopeTypes.has(type)) {
         el.textContent = "범위: 전체 Hyphen Studio · 읽기 전용 브리핑";
@@ -1587,11 +1600,12 @@ createServer(async (req, res) => {
     }
     if (url.pathname === "/api/projects" && req.method === "GET") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
-      const projects = (await readProjects()).map(({ id, name, domain, capabilities = [] }) => ({
+      const projects = (await readProjects()).map(({ id, name, domain, capabilities = [], capabilityReason }) => ({
         id,
         name,
         domain,
         capabilities,
+        capabilityReason: typeof capabilityReason === "string" ? capabilityReason.slice(0, 80) : null,
       }));
       return send(res, 200, { projects });
     }

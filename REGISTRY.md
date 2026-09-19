@@ -6,8 +6,8 @@ How `hermes-projects.json` is produced, loaded, and kept pointed at real local r
 
 Two runtimes consume the same JSON document (`{ "projects": [...] }`):
 
-- `mini-server.mjs` (web console) reads `HERMES_PROJECTS_FILE` (default `/app/hermes-projects.json` in Docker). It uses only `id`, `name`, `domain`, `capabilities`, and `miniVercelProjectId`:
-  - `GET /api/projects` returns those public fields for the project picker.
+- `mini-server.mjs` (web console) reads `HERMES_PROJECTS_FILE` (default `/app/hermes-projects.json` in Docker). It uses only `id`, `name`, `domain`, `capabilities`, `capabilityReason`, and `miniVercelProjectId`:
+  - `GET /api/projects` returns the public fields for the project picker; `capabilityReason` is the audit-produced machine code (≤80 chars) explaining why a project is status-only, never a path or registry text.
   - `POST /api/requests` rejects a request when the target project lacks the requested capability.
   - `POST /api/worker/plan` rejects an auto-mode plan whose resolved type the project does not support.
   - The gateway never reads `repo`, `branch`, `gitRemote`, or `github`. Broken local paths cannot crash the site, but they make repo-backed capabilities fail on the worker.
@@ -95,6 +95,19 @@ node scripts/hermes-registry-migrate.mjs --apply   # required for any write
 - Migration resolves repos by matching `project.github` to a local remote URL. If the registry's `github` fields are stale (for example an older runtime copy still pointing at a previous GitHub organization), URL matching finds nothing and every entry reports `unresolved`. Sync the corrected source `hermes-projects.json` to the runtime location — or fix the `github` fields first — then re-run the migration.
 
 Rollback: copy the newest `hermes-projects.json.backup-*` back over the registry path (or `git checkout -- hermes-projects.json` for the source copy). No restart is required for the gateway; the worker reads the file per request.
+
+## Capability audit (verifies capabilities against reality)
+
+```bash
+node scripts/hermes-capability-audit.mjs [--registry PATH] [--roots a:b:c] [--no-remote] [--format json]
+node scripts/hermes-capability-audit.mjs --apply   # required for any write
+```
+
+- Dry-run by default. Each project is re-verified deterministically: the declared or index-resolved `repo` must be a Git worktree, a remote whose URL normalizes equal to `project.github` must exist, and the registered `branch` must exist on that remote (`git ls-remote --heads`, `GIT_TERMINAL_PROMPT=0`, 15 s bound — never a credential prompt).
+- Verified projects keep (or gain) `["deployment_status","project_inspect","redeploy","development"]` plus resolved `repo`/`gitRemote`. Anything unverifiable degrades to `["deployment_status"]` and records `capabilityReason` — one of `repo_unset`, `repo_unresolved`, `repo_not_git`, `remote_missing`, `branch_unset`, `branch_missing`, `remote_unreachable`, `branch_remote_missing`. The UI maps the code to Korean guidance; nothing is guessed.
+- `--no-remote` skips `ls-remote` and verifies with local refs only.
+- `--apply` surgically edits `capabilities`/`repo`/`gitRemote`/`capabilityReason` inside each project object (compact entries keep their formatting), backs up the original to `hermes-projects.json.bak-<timestamp>`, verifies the result parses with the same project count, then atomically renames into place.
+- The audit only reads `.git/config`, refs, and `ls-remote` output — it never reads file contents or executes hooks.
 
 ## Pre-reboot / pre-change checklist
 

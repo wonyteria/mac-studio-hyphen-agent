@@ -319,6 +319,32 @@ test("home stays selected until an explicit request selection — no auto resele
   assert.match(html, /current = created\.request\.id; composingNew = false;/);
 });
 
+test("status-only projects surface their capability reason in the UI", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Server passes capabilityReason through the projects API (server-side
+  // contract — asserted against the module source, not the HTML response).
+  const source = await readFile(fileURLToPath(new URL("../mini-server.mjs", import.meta.url)), "utf8");
+  assert.match(source, /capabilityReason: typeof capabilityReason === "string" \? capabilityReason\.slice\(0, 80\) : null/);
+  // The composer marks status-only projects in the option label.
+  assert.match(html, /" · 상태 조회만"/);
+  // Guidance shows the audit reason before the generic capability copy.
+  assert.match(html, /capabilityReasonLabels\[projectReasons\[project\]\]/);
+  assert.match(html, /branch_remote_missing: "리모트에 브랜치 없음"/);
+  const login = await request(
+    "/api/login",
+    { method: "POST", body: JSON.stringify({ password: "test-password" }) },
+    null,
+  );
+  assert.equal(login.response.status, 200);
+  const cookie = login.response.headers.get("set-cookie").split(";")[0];
+  const { response, data } = await request("/api/projects", {}, cookie);
+  assert.equal(response.status, 200);
+  const reasoned = data.projects.find((project) => project.capabilityReason);
+  assert.ok(reasoned, "expected at least one status-only project with a reason");
+  assert.ok(reasoned.capabilityReason.length <= 80);
+  assert.deepEqual(reasoned.capabilities, ["deployment_status"]);
+});
+
 test("composer stacks fields on narrow screens and shows plain-Korean scope", async () => {
   const html = await (await fetch(baseUrl)).text();
   assert.match(html, /<label class="field"><span>프로젝트<\/span><select id="project"/);
@@ -409,7 +435,13 @@ test("requires login for requests and exposes only public project fields", async
 
   const projects = await request("/api/projects");
   assert.equal(projects.response.status, 200);
-  assert.deepEqual(Object.keys(projects.data.projects[0]).sort(), ["capabilities", "domain", "id", "name"]);
+  assert.deepEqual(Object.keys(projects.data.projects[0]).sort(), [
+    "capabilities",
+    "capabilityReason",
+    "domain",
+    "id",
+    "name",
+  ]);
   assert.equal(projects.data.projects[0].id, "hermes-mac-ops");
   assert.equal(projects.data.projects.length, 26);
 });

@@ -55,7 +55,7 @@ The Dockerfile ships `scripts/hermes-prefill.mjs` alongside the server; no extra
 
 ## Project Registry
 
-`hermes-projects.json` is the repo source of truth for deployed projects Hermes can see. It currently mirrors all 26 mini deploy projects for deployment status. Only Hermes Mac Ops, MAKO, Festival29 Card Studio, and mako-client have confirmed local repositories and therefore expose project inspection, approved development, and redeploy capabilities. The worker reads its runtime copy from `~/.local/share/hermes-ops/hermes-projects.json` (override: `HERMES_PROJECT_REGISTRY`).
+`hermes-projects.json` is the repo source of truth for deployed projects Hermes can see. It currently mirrors all 26 mini deploy projects for deployment status. Capabilities are re-verified deterministically against the local filesystem and each project's git remote by `scripts/hermes-capability-audit.mjs` — 18 projects currently verify a real repo + github-matching remote + registered branch and expose project inspection, approved development, and redeploy; the remaining 8 are status-only and carry a machine-readable `capabilityReason` the console surfaces in Korean (see `REGISTRY.md`). The worker reads its runtime copy from `~/.local/share/hermes-ops/hermes-projects.json` (override: `HERMES_PROJECT_REGISTRY`).
 
 Each project declares explicit `capabilities`. Mutation-capable entries also declare the exact repository, branch, Git remote, verification commands, persistent deployment files, and whether a successful change deploys automatically. Do not infer write access from a mini deploy record alone.
 

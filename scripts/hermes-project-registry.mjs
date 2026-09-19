@@ -163,10 +163,12 @@ export function remoteNameForUrl(remotes, githubUrl) {
   return names.find((name) => normalizeGitUrl(remotes[name]) === wanted) || null;
 }
 
-export async function findReposByRemote(githubUrl, roots, { maxDepth = MAX_REPO_SCAN_DEPTH } = {}) {
-  const wanted = normalizeGitUrl(githubUrl);
-  if (!wanted) return [];
-  const matches = [];
+// Single traversal of the search roots building normalized-remote → repo
+// paths. Callers auditing many projects share one index instead of walking the
+// roots once per project. Deterministic: roots in order, entries name-sorted
+// downstream by callers.
+export async function collectRepoIndex(roots, { maxDepth = MAX_REPO_SCAN_DEPTH } = {}) {
+  const index = new Map();
   const seen = new Set();
   async function walk(dir, depth, rootIndex) {
     if (depth > maxDepth || seen.has(dir)) return;
@@ -179,8 +181,11 @@ export async function findReposByRemote(githubUrl, roots, { maxDepth = MAX_REPO_
     }
     if (entries.some((entry) => entry.name === ".git")) {
       const info = await inspectRepo(dir);
-      if (remoteNameForUrl(info.remotes, githubUrl)) {
-        matches.push({ path: dir, remotes: info.remotes, rootIndex });
+      for (const [name, url] of Object.entries(info.remotes || {})) {
+        const key = normalizeGitUrl(url);
+        if (!key) continue;
+        if (!index.has(key)) index.set(key, []);
+        index.get(key).push({ path: dir, remotes: info.remotes, rootIndex, remoteName: name });
       }
       return;
     }
@@ -193,10 +198,20 @@ export async function findReposByRemote(githubUrl, roots, { maxDepth = MAX_REPO_
       if (isDir) await walk(join(dir, entry.name), depth + 1, rootIndex);
     }
   }
-  for (let index = 0; index < (roots || []).length; index += 1) {
-    await walk(roots[index], 0, index);
+  for (let index_ = 0; index_ < (roots || []).length; index_ += 1) {
+    await walk(roots[index_], 0, index_);
   }
-  return matches.sort((a, b) => a.rootIndex - b.rootIndex || a.path.localeCompare(b.path));
+  for (const matches of index.values()) {
+    matches.sort((a, b) => a.rootIndex - b.rootIndex || a.path.localeCompare(b.path));
+  }
+  return index;
+}
+
+export async function findReposByRemote(githubUrl, roots, { maxDepth = MAX_REPO_SCAN_DEPTH } = {}) {
+  const wanted = normalizeGitUrl(githubUrl);
+  if (!wanted) return [];
+  const index = await collectRepoIndex(roots, { maxDepth });
+  return index.get(wanted) || [];
 }
 
 export function projectNeedsRepo(project) {
@@ -394,7 +409,7 @@ export async function validateRegistry(projects, options = {}) {
   return { results, summary };
 }
 
-function projectObjectSpan(raw, projectId) {
+export function projectObjectSpan(raw, projectId) {
   const idNeedle = new RegExp(`"id"\\s*:\\s*"${projectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
   const idMatch = idNeedle.exec(raw);
   if (!idMatch) return null;
@@ -403,6 +418,62 @@ function projectObjectSpan(raw, projectId) {
   const start = raw.lastIndexOf("{", idMatch.index);
   if (start === -1) return null;
   return { start, end };
+}
+
+// Sentinel for applyRegistryUpsert: removes the field from the project object.
+export const REMOVE_FIELD = Symbol("hermes-registry-remove-field");
+
+const UPSERT_VALUE_PATTERN =
+  '"(?:[^"\\\\]|\\\\.)*"|\\[[^\\]]*\\]|\\{[^{}]*\\}|true|false|null|-?[0-9][0-9.eE+-]*';
+
+function upsertFieldInSpan(segment, field, value) {
+  if (value === REMOVE_FIELD) {
+    const pattern = new RegExp(
+      `\\s*,?\\s*"${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:\\s*(?:${UPSERT_VALUE_PATTERN})`,
+    );
+    const removed = segment.replace(pattern, "");
+    // Removing an absent field is a no-op — the desired end state already holds.
+    if (removed === segment) return segment;
+    // Clean up a dangling comma when the removed field was the first property.
+    return removed.replace(/\{\s*,/, "{").replace(/,\s*}/, "}");
+  }
+  const encoded = JSON.stringify(value);
+  const fieldPattern = new RegExp(
+    `("${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*:\\s*)(?:${UPSERT_VALUE_PATTERN})`,
+  );
+  if (fieldPattern.test(segment)) {
+    return segment.replace(fieldPattern, (match, prefix) => `${prefix}${encoded}`);
+  }
+  // Field absent: insert before the closing brace, matching the object's
+  // existing style (single-line entries get `, "f": v`; multi-line entries get
+  // a newline at the detected property indent).
+  const indent = segment.match(/\n(\s+)"/)?.[1];
+  if (indent) {
+    const closing = segment.match(/\n(\s*)\}\s*$/);
+    if (!closing) throw new Error(`프로젝트 객체의 닫는 괄호를 찾지 못했습니다.`);
+    const head = segment.slice(0, closing.index);
+    return `${head},\n${indent}"${field}": ${encoded}\n${closing[1]}}`;
+  }
+  return segment.replace(/\s*\}\s*$/, `, "${field}": ${encoded}}`);
+}
+
+// Applies {field: value} upserts inside one project object while preserving the
+// registry file's existing formatting — surgical edits only, no re-serialize.
+export function applyRegistryUpsert(raw, projectId, fields) {
+  const span = projectObjectSpan(raw, projectId);
+  if (!span) throw new Error(`레지스트리에서 프로젝트를 찾지 못했습니다: ${projectId}`);
+  // The span runs to the next project's "id" — isolate this object's own
+  // closing brace (project fields are flat: strings, numbers, booleans, and
+  // string arrays only, so the first `}` ends the object).
+  const segment = raw.slice(span.start, span.end);
+  const closeIndex = segment.indexOf("}");
+  if (closeIndex === -1) throw new Error(`프로젝트 ${projectId}의 객체 끝을 찾지 못했습니다.`);
+  let object = segment.slice(0, closeIndex + 1);
+  const suffix = segment.slice(closeIndex + 1);
+  for (const [field, value] of Object.entries(fields)) {
+    object = upsertFieldInSpan(object, field, value);
+  }
+  return raw.slice(0, span.start) + object + suffix + raw.slice(span.end);
 }
 
 export function applyRegistryEdits(raw, edits) {

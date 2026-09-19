@@ -7,7 +7,8 @@ Internal Korean-first chat console that operates the Mac Studio deployment serve
 - `mini-server.mjs` — production web gateway (request queue, auth, capability gates). Reads `hermes-projects.json` via `HERMES_PROJECTS_FILE`. `GET /` renders the Studio handoff prefill via `scripts/hermes-prefill.mjs` (`?project=&type=&prompt=` only).
 - `scripts/hermes-prefill.mjs` — bounded Studio→Hermes composer prefill contract: validates `project`/`type`/`prompt` query params against the registry and request-type allowlist, fails closed to neutral defaults on unknown/duplicate/oversized/control-character/malformed values, and serializes only `{project, type, prompt}` for safe embedding. No registry paths, shell commands, credentials, approval, auto-submit, or execution state can cross; the draft never submits itself.
 - `scripts/hermes-local-worker.mjs` — Mac Studio worker. Deployed as a **single self-contained file** to `~/.local/share/hermes-ops/`; it must not import sibling modules. All path defaults derive from `os.homedir()` — never hardcode `/Users/<name>`.
-- `scripts/hermes-project-registry.mjs` — shared registry library: canonical path resolution, validation, migration planning.
+- `scripts/hermes-project-registry.mjs` — shared registry library: canonical path resolution, validation, migration planning, repo search index, surgical field upserts.
+- `scripts/hermes-capability-audit.mjs` — deterministic capability audit: re-verifies every project's repo path, github-matching remote, and branch (`git ls-remote`, prompt-free, 15 s bound) and downgrades unverifiable projects to `deployment_status` + `capabilityReason`. Dry-run; `--apply` backs up + atomically rewrites. Never guesses.
 - `scripts/hermes-registry-preflight.mjs` — read-only registry validator (exit 0/1/2).
 - `scripts/hermes-registry-migrate.mjs` — registry migration; dry-run by default, `--apply` does backup + atomic replace.
 - `scripts/hermes-runtime-install.mjs` — worker runtime installer: plan (dry-run) / `--apply` / `--verify` / `--rollback`. Never reads or writes `.env`; atomic writes + timestamped backups; generates (but never loads) the LaunchAgent plist.
@@ -31,10 +32,11 @@ Internal Korean-first chat console that operates the Mac Studio deployment serve
 ## Commands
 
 ```bash
-npm run test:runtime        # node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs tests/studio-briefing.test.mjs tests/prefill.test.mjs tests/registry-sync.test.mjs tests/business-status.test.mjs tests/evidence-audit.test.mjs
+npm run test:runtime        # node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs tests/studio-briefing.test.mjs tests/prefill.test.mjs tests/registry-sync.test.mjs tests/business-status.test.mjs tests/evidence-audit.test.mjs tests/capability-audit.test.mjs
 npm run lint                # eslint .
 node --check <file.mjs>     # syntax check worker/server scripts
 node scripts/hermes-registry-preflight.mjs   # registry health (read-only)
+node scripts/hermes-capability-audit.mjs     # capability re-verification (dry-run; --apply rewrites + backup)
 node scripts/hermes-runtime-install.mjs      # runtime install plan (dry-run; --apply/--verify/--rollback)
 node scripts/hermes-business-briefing.mjs    # Studio business briefing (read-only; --format json|--registry|--expect-hash)
 node scripts/hermes-registry-sync.mjs sync --source <studio-export> --destination <persist-path>   # validate + atomic copy + status record (--dry-run plan, --json)
