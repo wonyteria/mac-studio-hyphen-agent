@@ -12,7 +12,7 @@ import {
   buildSyncStatus,
   parseSyncStatusDocument,
 } from "../scripts/hermes-business-registry.mjs";
-import { writeAtomicMode } from "../scripts/hermes-registry-sync.mjs";
+import { protectedPrefixFor, writeAtomicMode } from "../scripts/hermes-registry-sync.mjs";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const syncScript = join(repoRoot, "scripts", "hermes-registry-sync.mjs");
@@ -502,7 +502,7 @@ test("a normal sync exits promptly with no lock or timer residue", async () => {
   const elapsed = Date.now() - started;
   assert.equal(run.signal, null, "the CLI must exit on its own, not be killed");
   assert.equal(run.status, 0, run.stderr);
-  assert.ok(elapsed < 5000, `a finished sync must not wait out the watchdog (${elapsed}ms)`);
+  assert.ok(elapsed < 2000, `a finished sync must not wait out the watchdog (${elapsed}ms)`);
   const entries = await readdir(join(workDir, "quick-dest"));
   assert.equal(entries.includes("registry-sync.lock"), false, "the lock must be released");
   assert.equal(entries.some((name) => name.includes(".tmp-")), false, "no temp residue");
@@ -586,4 +586,36 @@ test("install stages a runnable tool copy and records the sync-paths config", as
   assert.match(gone.stdout, /동기화 경로 설정을 제거했습니다/);
   assert.equal(await lstat(configPath).catch(() => null), null);
   assert.equal(await lstat(stageDir).catch(() => null), null);
+});
+
+test("an install --no-load plist keeps every launchd-touched path outside protected prefixes", async () => {
+  const fakeHome = join(workDir, "plist-guard-home");
+  const mirror = join(fakeHome, "Library", "Application Support", "mirror", "registry.private.json");
+  const dest = join(fakeHome, "Library", "Application Support", "dest", "registry.private.json");
+  const env = { HOME: fakeHome, HERMES_REGISTRY_SYNC_LAUNCHCTL: "/usr/bin/false" };
+  const run = runCli(["install", "--source", mirror, "--destination", dest, "--no-load"], env);
+  assert.equal(run.status, 0, run.stderr);
+  const plistPath = join(fakeHome, "Library", "LaunchAgents", "com.hyphen.hermes-registry-sync.plist");
+  const plist = await readFile(plistPath, "utf8");
+  // ProgramArguments order: node, staged script, "sync", --source, source,
+  // --destination, destination, --status, statusPath. Every path the launchd
+  // child opens must sit outside the protected prefixes — an open() under
+  // one suspends in the kernel forever, which is the field defect this
+  // install layout exists to prevent. --allow-protected-paths is not used.
+  const stageDir = join(fakeHome, "Library", "Application Support", "Hyphen", "hermes-registry-sync", "tool");
+  const statusPath = join(dirname(dest), SYNC_STATUS_FILENAME);
+  const launchdPaths = {
+    script: join(stageDir, "hermes-registry-sync.mjs"),
+    source: mirror,
+    destination: dest,
+    status: statusPath,
+  };
+  for (const [label, launchdPath] of Object.entries(launchdPaths)) {
+    assert.ok(plist.includes(`<string>${launchdPath}</string>`), `plist must carry the ${label} path`);
+    assert.equal(
+      protectedPrefixFor(launchdPath, fakeHome),
+      null,
+      `plist ${label} path must be outside Documents/Desktop/Downloads/Mobile Documents/CloudStorage`,
+    );
+  }
 });

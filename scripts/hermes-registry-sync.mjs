@@ -848,6 +848,7 @@ export {
   buildSyncStatus,
   launchdPlist,
   parseArgs,
+  protectedPrefixFor,
   resolveSyncPaths,
   runSyncCommand,
   writeAtomicMode,
