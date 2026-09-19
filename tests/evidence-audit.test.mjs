@@ -227,7 +227,13 @@ const servers = {};
 let runtimeDir;
 
 const serverRegistry = auditRegistry([
-  auditProject({ id: "alpha", name: "알파" }),
+  auditProject({
+    id: "alpha",
+    name: "알파",
+    // Operator-authored asks may carry local paths or secret-shaped text —
+    // the request record must never store them.
+    nextEvidence: ["백업 경로 /Users/Example/private/secrets 확인", "token sk-abc123def456 재발급 여부 확인"],
+  }),
   auditProject({ id: "beta", name: "베타" }),
   verifiedProject,
   auditProject({ id: "film", organization: "29sfilm", name: "필름" }),
@@ -347,6 +353,56 @@ test("studio_evidence_audit POST completes synchronously — never queued for th
   assert.equal(request.result.includes("localPath"), false);
   assert.equal(request.briefing.view, "evidence_audit");
   assert.equal(request.briefing.itemCount, 2);
+
+  // Structured view model persisted for the console renderer — bounded and
+  // allowlisted, never the raw audit document.
+  const view = request.briefing.audit;
+  assert.equal(view.kind, "audit-v1");
+  assert.deepEqual(
+    Object.keys(view).sort(),
+    ["coverage", "items", "kind", "remaining", "summary"],
+  );
+  assert.deepEqual(
+    Object.keys(view.coverage).sort(),
+    ["evidenceUnverified", "excluded", "hyphenCore", "ownerMissing", "statusUnknown"],
+  );
+  assert.deepEqual(
+    Object.keys(view.summary).sort(),
+    ["byPriority", "pendingEvidence", "projectsNeedingReview"],
+  );
+  assert.equal(view.items.length, 2);
+  assert.equal(view.remaining, 0);
+  for (const item of view.items) {
+    assert.deepEqual(
+      Object.keys(item).sort(),
+      ["actions", "businessGroup", "missingFields", "priority", "projectId", "projectName"],
+    );
+    assert.ok(item.actions.length >= 1 && item.actions.length <= 4);
+  }
+  const serialized = JSON.stringify(request.briefing);
+  for (const leaked of [sourceHash, "docs/proof.md", "repo-url", "localPath", "/Users/", "sk-abc123def456"]) {
+    assert.equal(serialized.includes(leaked), false, `briefing must not store ${leaked}`);
+  }
+});
+
+test("owner-facing audit actions are natural Korean — no internal field tokens", () => {
+  const audit = buildEvidenceAudit(serverRegistry);
+  assert.ok(audit.items.length > 0);
+  for (const item of audit.items) {
+    for (const action of item.actions) {
+      assert.equal(
+        /[A-Za-z]/.test(action),
+        false,
+        `action must be plain Korean, got: ${action}`,
+      );
+    }
+  }
+  // The API schema keeps enum keys (missingFields/basis) — wording only
+  // changes in the owner-facing action phrases.
+  assert.deepEqual(
+    audit.items[0].missingFields.every((field) => typeof field === "string"),
+    true,
+  );
 });
 
 test("studio_evidence_audit fails closed when the registry is unavailable", async () => {

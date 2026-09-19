@@ -78,26 +78,47 @@ const html = `<!doctype html>
   <style>
     :root {
       color-scheme: light;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --bg: #ffffff;
-      --sidebar: #f9f9f9;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+      --bg: #faf8f4;
+      --sidebar: #f5f1ea;
       --surface: #ffffff;
-      --line: #e5e5e5;
-      --line-strong: #d9d9d9;
-      --text: #0d0d0d;
-      --muted: #6f6f6f;
-      --soft: #f4f4f4;
-      --assistant: #f7f7f8;
-      --accent: #10a37f;
-      --danger: #d92d20;
+      --line: #e7e1d7;
+      --line-strong: #d8d0c2;
+      --text: #1c1914;
+      --muted: #6e665a;
+      --soft: #efeae1;
+      --assistant: #f7f4ee;
+      --accent: #1c7a54;
+      --accent-soft: #e3efe8;
+      --danger: #b42318;
+      --danger-soft: #fbeeec;
       --warning: #b54708;
+      --warning-soft: #f9f0e0;
+      --focus: #1c7a54;
     }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
     html, body { height: 100%; }
-    body { margin: 0; background: var(--bg); color: var(--text); }
+    body { background: var(--bg); color: var(--text); margin: 0; }
     button, input, textarea, select { font: inherit; }
     button { border: 0; cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    .fold > summary:focus-visible { outline-offset: -2px; }
+    .sr-only {
+      clip-path: inset(50%);
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      padding: 0;
+      position: absolute;
+      width: 1px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
+    }
     #login {
       align-items: center;
       display: grid;
@@ -113,7 +134,7 @@ const html = `<!doctype html>
     }
     .mark {
       align-items: center;
-      background: #0d0d0d;
+      background: #1c1914;
       border-radius: 50%;
       color: white;
       display: inline-flex;
@@ -122,24 +143,24 @@ const html = `<!doctype html>
       justify-content: center;
       width: 38px;
     }
-    h1 { font-size: 28px; letter-spacing: 0; line-height: 1.15; margin: 0; }
+    h1 { font-size: 28px; letter-spacing: -0.01em; line-height: 1.15; margin: 0; }
     p { margin: 0; }
-    .muted { color: var(--muted); line-height: 1.5; }
+    .muted { color: var(--muted); line-height: 1.55; }
     .login-form { display: grid; gap: 12px; }
     input, textarea, select {
       background: var(--surface);
       border: 1px solid var(--line-strong);
-      border-radius: 8px;
+      border-radius: 10px;
       color: var(--text);
       outline: 0;
       padding: 12px 13px;
       width: 100%;
     }
-    input:focus, textarea:focus, select:focus { border-color: #8f8f8f; box-shadow: 0 0 0 2px rgb(0 0 0 / 5%); }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); }
     .primary {
       align-items: center;
-      background: #0d0d0d;
-      border-radius: 8px;
+      background: #1c1914;
+      border-radius: 10px;
       color: white;
       display: inline-flex;
       font-weight: 650;
@@ -150,18 +171,21 @@ const html = `<!doctype html>
     .icon-btn {
       align-items: center;
       background: transparent;
-      border-radius: 8px;
+      border-radius: 10px;
       color: var(--text);
       display: inline-flex;
-      height: 36px;
+      flex: none;
+      font-size: 16px;
+      height: 40px;
       justify-content: center;
-      width: 36px;
+      width: 40px;
     }
-    .icon-btn:hover, .thread:hover, .pill:hover { background: var(--soft); }
+    .icon-btn:hover, .thread:hover, .pill:hover, .new-chat:hover, .drawer-action:hover { background: var(--soft); }
     #app {
       display: grid;
-      grid-template-columns: 280px minmax(0, 1fr);
+      grid-template-columns: 272px minmax(0, 1fr);
       height: 100vh;
+      height: 100dvh;
       min-height: 0;
     }
     .sidebar {
@@ -173,38 +197,56 @@ const html = `<!doctype html>
       padding: 12px;
     }
     .side-top, .side-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .brand { align-items: center; display: flex; gap: 10px; font-weight: 700; }
-    .new-chat { background: transparent; border-radius: 8px; color: var(--text); padding: 9px 10px; text-align: left; width: 100%; }
-    .threads { display: grid; gap: 4px; margin-top: 16px; overflow: auto; }
-    .thread {
+    .brand { align-items: center; display: flex; gap: 10px; font-weight: 700; min-width: 0; }
+    .brand > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .new-chat {
       background: transparent;
-      border-radius: 8px;
+      border-radius: 10px;
       color: var(--text);
-      display: grid;
-      gap: 3px;
-      padding: 10px;
+      font-size: 14px;
+      margin-top: 6px;
+      min-height: 44px;
+      padding: 0 10px;
       text-align: left;
       width: 100%;
     }
+    .threads { align-content: start; display: grid; gap: 4px; margin-top: 14px; overflow: auto; }
+    .threads-empty { color: var(--muted); font-size: 13px; padding: 6px 10px; }
+    .thread {
+      background: transparent;
+      border-radius: 10px;
+      color: var(--text);
+      display: grid;
+      gap: 3px;
+      min-height: 44px;
+      min-width: 0;
+      padding: 8px 10px;
+      text-align: left;
+      width: 100%;
+    }
+    .thread[aria-current="true"] { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-strong); }
     .thread strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .thread span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .side-bottom { color: var(--muted); font-size: 13px; padding-top: 12px; }
     .chat {
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto minmax(0, 1fr) auto;
       height: 100vh;
+      height: 100dvh;
       min-width: 0;
     }
     .chat-top {
       align-items: center;
-      border-bottom: 1px solid transparent;
+      border-bottom: 1px solid var(--line);
       display: flex;
-      justify-content: space-between;
-      min-height: 56px;
-      padding: 10px 18px;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      padding: 8px 14px;
     }
-    .chat-title { align-items: center; display: flex; gap: 10px; min-width: 0; }
-    .chat-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chat-title { align-items: center; display: flex; flex: 1 1 auto; gap: 8px; min-width: 0; }
+    .chat-title strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-row { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .menu-btn { display: none; }
     .pill {
       align-items: center;
       background: transparent;
@@ -214,10 +256,13 @@ const html = `<!doctype html>
       display: inline-flex;
       font-size: 13px;
       gap: 6px;
-      min-height: 34px;
+      min-height: 32px;
       padding: 0 12px;
     }
+    button.pill { min-height: 40px; }
+    .pill.ok { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
     .messages {
+      min-width: 0;
       overflow-y: auto;
       padding: 24px 18px 120px;
     }
@@ -232,63 +277,121 @@ const html = `<!doctype html>
       align-items: center;
       border-radius: 50%;
       display: flex;
+      flex: none;
       font-size: 13px;
       font-weight: 700;
       height: 32px;
       justify-content: center;
       width: 32px;
     }
-    .user .avatar { background: #0d0d0d; color: white; }
+    .user .avatar { background: #1c1914; color: white; }
     .assistant .avatar { background: var(--accent); color: white; }
     .bubble { line-height: 1.62; min-width: 0; padding-top: 3px; }
-    .bubble h2 { font-size: 16px; margin: 0 0 6px; }
-    .bubble p { white-space: pre-wrap; }
+    .bubble h2 { font-size: 15px; margin: 0 0 6px; }
+    .bubble p { overflow-wrap: anywhere; white-space: pre-wrap; }
     .assistant-block {
       background: var(--assistant);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 12px;
       margin-top: 10px;
+      min-width: 0;
       overflow: hidden;
     }
     .block-head {
       align-items: center;
       border-bottom: 1px solid var(--line);
       display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
       justify-content: space-between;
       padding: 9px 12px;
     }
+    .block-head > span { min-width: 0; overflow-wrap: anywhere; }
     .status {
       border-radius: 999px;
       color: var(--muted);
+      flex: none;
       font-size: 12px;
       padding: 4px 8px;
     }
     .approval_required { color: var(--warning); }
     .running { color: #0969da; }
-    .done { color: #087443; }
+    .done { color: var(--accent); }
     .failed { color: var(--danger); }
-    pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.5;
-      margin: 0;
-      overflow-x: auto;
-      padding: 12px;
+    .result-text {
+      font-size: 14px;
+      line-height: 1.7;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      padding: 14px;
       white-space: pre-wrap;
     }
+    .result-meta { color: var(--muted); font-size: 13px; padding: 12px 14px; }
+    .audit-view { display: grid; gap: 14px; min-width: 0; padding: 14px; }
+    .audit-metrics { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      padding: 12px;
+    }
+    .metric strong { font-size: 24px; font-weight: 700; line-height: 1.1; }
+    .metric span { color: var(--muted); font-size: 12px; }
+    .audit-prio { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 13px; gap: 6px; }
+    .chip {
+      background: var(--soft);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 4px 10px;
+      white-space: nowrap;
+    }
+    .chip.prio-high { background: var(--danger-soft); color: var(--danger); }
+    .chip.prio-medium { background: var(--warning-soft); color: var(--warning); }
+    .chip.prio-low { background: var(--soft); color: var(--muted); }
+    .audit-lead { font-size: 14px; font-weight: 600; }
+    .audit-items { display: grid; gap: 8px; min-width: 0; }
+    .audit-item { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-width: 0; overflow: hidden; }
+    .audit-item > summary {
+      align-items: center;
+      cursor: pointer;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      list-style: none;
+      min-height: 44px;
+      padding: 10px 12px;
+    }
+    .audit-item > summary::-webkit-details-marker { display: none; }
+    .audit-item > summary::after { color: var(--muted); content: "▸"; flex: none; font-size: 11px; }
+    .audit-item[open] > summary::after { content: "▾"; }
+    .audit-name { font-size: 14px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+    .audit-badge { border-radius: 999px; flex: none; font-size: 11px; padding: 3px 9px; white-space: nowrap; }
+    .audit-badge.high { background: var(--danger-soft); color: var(--danger); }
+    .audit-badge.medium { background: var(--warning-soft); color: var(--warning); }
+    .audit-badge.low { background: var(--soft); color: var(--muted); }
+    .audit-body { border-top: 1px solid var(--line); display: grid; gap: 10px; padding: 10px 12px 12px; }
+    .audit-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .audit-chips .chip { background: var(--soft); color: var(--text); }
+    .audit-actions { display: grid; gap: 4px; margin: 0; padding-left: 18px; }
+    .audit-actions li { font-size: 13px; line-height: 1.5; }
+    .audit-more { color: var(--muted); font-size: 13px; }
     .composer-wrap {
-      background: linear-gradient(180deg, rgb(255 255 255 / 0), #fff 22%);
+      background: linear-gradient(180deg, rgb(250 248 244 / 0), var(--bg) 30%);
       bottom: 0;
-      left: 280px;
-      padding: 34px 18px 18px;
+      left: 272px;
+      padding: 30px 16px 14px;
       position: fixed;
       right: 0;
     }
     .composer {
       background: var(--surface);
       border: 1px solid var(--line-strong);
-      border-radius: 18px;
-      box-shadow: 0 8px 28px rgb(0 0 0 / 8%);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgb(28 25 20 / 8%);
       margin: 0 auto;
       max-width: 780px;
       overflow: hidden;
@@ -296,79 +399,141 @@ const html = `<!doctype html>
     .composer textarea {
       border: 0;
       border-radius: 0;
-      box-shadow: none;
       display: block;
-      min-height: 58px;
-      max-height: 220px;
+      max-height: 200px;
+      min-height: 56px;
       resize: none;
     }
-    .composer-bar {
-      align-items: center;
-      display: flex;
-      gap: 8px;
-      justify-content: space-between;
-      padding: 8px;
-    }
-    .composer-options { align-items: center; display: flex; gap: 6px; min-width: 0; }
+    .composer-controls { align-items: flex-end; display: flex; gap: 10px; padding: 10px 10px 4px; }
+    .composer-fields { display: flex; flex: 1; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .field { display: grid; flex: 1 1 160px; gap: 3px; min-width: 0; }
+    .field > span { color: var(--muted); font-size: 11px; font-weight: 650; padding-left: 2px; }
     .composer select {
-      border-radius: 999px;
-      color: var(--muted);
-      font-size: 13px;
-      max-width: 170px;
-      padding: 8px 10px;
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 14px;
+      min-width: 0;
+      padding: 10px 12px;
+      width: 100%;
     }
-    .composer select.project { max-width: 210px; }
     .send {
       align-items: center;
-      background: #0d0d0d;
+      background: #1c1914;
       border-radius: 50%;
       color: white;
       display: inline-flex;
-      height: 34px;
+      flex: none;
+      font-size: 17px;
+      height: 44px;
       justify-content: center;
-      width: 34px;
+      width: 44px;
     }
-    .error { color: var(--danger); font-size: 13px; min-height: 18px; }
+    .scope-line { color: var(--muted); font-size: 12px; min-height: 16px; padding: 0 12px 10px; }
+    .error { color: var(--danger); font-size: 13px; margin: 6px auto 0; max-width: 780px; min-height: 18px; padding: 0 4px; }
     .error[data-guide="1"] { color: var(--muted); }
     .progress-copy { color: var(--muted); font-size: 13px; padding: 10px 12px 0; }
-    .event-list { border-top: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
+    .fold { border-top: 1px solid var(--line); }
+    .fold > summary {
+      align-items: center;
+      cursor: pointer;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      list-style: none;
+      min-height: 40px;
+      padding: 8px 12px;
+    }
+    .fold > summary::-webkit-details-marker { display: none; }
+    .fold > summary::after { color: var(--muted); content: "▸"; flex: none; font-size: 11px; }
+    .fold[open] > summary::after { content: "▾"; }
+    .events-fold > summary { color: var(--muted); font-size: 12px; }
+    .event-list { display: grid; gap: 6px; padding: 0 12px 12px; }
     .event { color: var(--muted); display: grid; font-size: 12px; gap: 2px; grid-template-columns: 82px minmax(0, 1fr); }
-    .event strong { color: var(--text); font-weight: 600; }
-    .empty { color: var(--muted); margin: 18vh auto 0; max-width: 560px; text-align: center; }
-    .empty h1 { font-size: clamp(28px, 5vw, 38px); margin-bottom: 12px; }
-    .preset-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
-    .preset-scope { font-size: 12px; margin-top: 14px; }
+    .event strong { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+    .home { margin: 0 auto; max-width: 720px; min-width: 0; padding: 7vh 18px 40px; }
+    .home-eyebrow { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.05em; margin-bottom: 14px; }
+    .home h1 { font-size: clamp(25px, 6vw, 33px); line-height: 1.2; margin-bottom: 10px; }
+    .home-state { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+    .state-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 5px 12px;
+      white-space: nowrap;
+    }
+    .state-chip.ok { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+    .state-chip.warn { background: var(--warning-soft); border-color: transparent; color: var(--warning); }
+    .state-chip.down { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+    .action-groups { display: grid; gap: 20px; margin-top: 30px; }
+    .action-group h3 { font-size: 13px; font-weight: 650; margin: 0; }
+    .group-note { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+    .preset-grid { display: flex; flex-wrap: wrap; gap: 8px; }
     .preset {
       background: var(--surface);
       border: 1px solid var(--line-strong);
       border-radius: 999px;
       color: var(--text);
       font-size: 13px;
-      min-height: 40px;
+      min-height: 44px;
       padding: 0 16px;
     }
     .preset:hover { background: var(--soft); }
-    .chat-side { align-items: center; display: flex; gap: 10px; }
-    .evidence { color: var(--muted); font-size: 12px; white-space: nowrap; }
-    .pill.offline { border-color: #f0c4bc; color: var(--danger); }
-    .pill.biz-stale { border-color: #ecd2a8; color: var(--warning); }
-    .pill.biz-down { border-color: #f0c4bc; color: var(--danger); }
-    .s1 { border-bottom: 1px solid var(--line); display: grid; gap: 6px; padding: 10px 12px; }
-    .s1-head { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
-    .s1-title { font-size: 12px; font-weight: 650; }
-    .s1-badge { border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; padding: 2px 8px; white-space: nowrap; }
-    .s1-row { color: var(--muted); display: flex; font-size: 12px; justify-content: space-between; }
+    .preset-scope { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 22px; }
+    .pill.offline { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+    .pill.biz-stale { background: var(--warning-soft); border-color: transparent; color: var(--warning); }
+    .pill.biz-down { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+    .s1-body { display: grid; gap: 6px; padding: 0 12px 10px; }
+    .s1-head { color: var(--muted); font-size: 12px; }
+    .s1-title { font-weight: 650; }
+    .s1-badge { border: 1px solid var(--line); border-radius: 999px; font-size: 11px; padding: 2px 8px; white-space: nowrap; }
+    .s1-row { color: var(--muted); display: flex; font-size: 12px; gap: 12px; justify-content: space-between; }
     .s1-row strong { color: var(--text); font-weight: 600; }
+    .drawer-scrim { background: rgb(28 25 20 / 42%); inset: 0; position: fixed; z-index: 40; }
+    .drawer {
+      background: var(--sidebar);
+      bottom: 0;
+      box-shadow: 8px 0 30px rgb(0 0 0 / 14%);
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      left: 0;
+      max-width: 86vw;
+      padding: 14px;
+      position: fixed;
+      top: 0;
+      width: 300px;
+      z-index: 50;
+    }
+    .drawer-head { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-width: 0; }
+    .drawer-action {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      margin-top: 10px;
+      min-height: 44px;
+      padding: 0 14px;
+      text-align: left;
+      width: 100%;
+    }
+    .drawer-threads { margin-top: 12px; min-height: 0; }
+    .drawer-bottom { align-items: center; display: flex; gap: 8px; justify-content: space-between; padding-top: 12px; }
     @media (max-width: 760px) {
-      #app { grid-template-columns: 1fr; }
+      #app { grid-template-columns: minmax(0, 1fr); }
       .sidebar { display: none; }
-      .composer-wrap { left: 0; }
-      .message { grid-template-columns: 30px minmax(0, 1fr); justify-content: stretch; }
-      .messages { padding-inline: 14px; }
-      .composer-options { flex: 1; }
-      .composer select, .composer select.project { max-width: none; min-width: 0; }
-      .composer select.project { flex: 1.2; }
-      .composer select#type { flex: 1; }
+      .menu-btn { display: inline-flex; }
+      .chat-top { padding: 8px 12px; }
+      .composer-wrap { left: 0; padding: 24px 12px 12px; }
+      .message { grid-template-columns: 28px minmax(0, 1fr); justify-content: stretch; }
+      .messages { padding: 18px 14px 110px; }
+      .field { flex-basis: 45%; }
+      .audit-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 420px) {
+      .field { flex-basis: 100%; }
+      .chat-title strong { font-size: 14px; }
     }
   </style>
 </head>
@@ -392,29 +557,34 @@ const html = `<!doctype html>
       <div>
         <div class="side-top">
           <div class="brand"><span class="mark">H</span><span>Hyphen Studio Agent</span></div>
-          <button id="refresh" class="icon-btn" title="새로고침">↻</button>
+          <button id="refresh" class="icon-btn" type="button" title="새로고침" aria-label="새로고침">↻</button>
         </div>
-        <button id="newChat" class="new-chat">+ 새 요청</button>
-        <nav id="threads" class="threads"></nav>
+        <button id="homeBtn" class="new-chat" type="button">홈 · 빠른 작업</button>
+        <button id="newChat" class="new-chat" type="button">+ 새 요청</button>
+        <nav id="threads" class="threads" aria-label="지난 요청"></nav>
       </div>
       <div class="side-bottom">
         <span>Mac Studio · Hermes</span>
-        <button id="logout" class="icon-btn" title="로그아웃">⌁</button>
+        <button id="logout" class="icon-btn" type="button" title="로그아웃" aria-label="로그아웃">⌁</button>
       </div>
     </aside>
     <section class="chat">
       <header class="chat-top">
-        <div class="chat-title"><strong>Hyphen Studio Agent</strong><span id="conn" class="pill">연결 확인 중</span></div>
-        <div class="chat-side"><span id="biz" class="pill" hidden></span><span id="evidence" class="evidence" hidden></span><button id="refreshTop" class="pill">새로고침</button></div>
+        <div class="chat-title">
+          <button id="menuBtn" class="icon-btn menu-btn" type="button" aria-label="기록 메뉴 열기" aria-expanded="false" aria-controls="drawer">☰</button>
+          <strong>Hyphen Studio Agent</strong>
+        </div>
+        <div class="status-row"><span id="conn" class="pill">연결 확인 중</span><span id="biz" class="pill" hidden></span><span id="evidence" class="pill" hidden></span><button id="refreshTop" class="pill" type="button">새로고침</button></div>
       </header>
       <div id="messages" class="messages"></div>
       <form id="requestForm" class="composer-wrap">
         <div class="composer">
-          <textarea id="body" placeholder="프로젝트 요청을 자연스럽게 적어주세요"></textarea>
-          <div class="composer-bar">
-            <div class="composer-options">
-              <select id="project" class="project" aria-label="대상 프로젝트"></select>
-              <select id="type" aria-label="요청 종류">
+          <label class="sr-only" for="body">요청 내용</label>
+          <textarea id="body" placeholder="프로젝트 요청을 자연스럽게 적어주세요" rows="2"></textarea>
+          <div class="composer-controls">
+            <div class="composer-fields">
+              <label class="field"><span>프로젝트</span><select id="project" class="project"></select></label>
+              <label class="field"><span>작업 종류</span><select id="type">
                 <option value="auto">자동 판단</option>
                 <option value="studio_overview">전체 Studio 브리핑</option>
                 <option value="studio_priorities">전체 Studio 우선순위</option>
@@ -428,14 +598,29 @@ const html = `<!doctype html>
                 <option value="development">Codex 개발 요청</option>
                 <option value="file_cleanup">파일 정리</option>
                 <option value="hermes_ops">Hermes 운영 요청</option>
-              </select>
+              </select></label>
             </div>
-            <button class="send" title="보내기">↑</button>
+            <button class="send" type="submit" title="보내기" aria-label="보내기">↑</button>
           </div>
+          <p id="scopeLine" class="scope-line" aria-live="polite"></p>
         </div>
-        <p id="formStatus" class="error"></p>
+        <p id="formStatus" class="error" role="status"></p>
       </form>
     </section>
+    <div id="drawerScrim" class="drawer-scrim" hidden></div>
+    <nav id="drawer" class="drawer" hidden aria-label="요청 기록" role="dialog" aria-modal="true">
+      <div class="drawer-head">
+        <div class="brand"><span class="mark">H</span><span>Hyphen Studio Agent</span></div>
+        <button id="drawerClose" class="icon-btn" type="button" aria-label="기록 닫기">✕</button>
+      </div>
+      <button id="drawerHome" class="drawer-action" type="button">홈 · 빠른 작업</button>
+      <button id="drawerNew" class="drawer-action" type="button">+ 새 요청</button>
+      <div id="drawerThreads" class="threads drawer-threads" aria-label="지난 요청"></div>
+      <div class="drawer-bottom">
+        <button id="drawerRefresh" class="pill" type="button">새로고침</button>
+        <button id="drawerLogout" class="pill" type="button">로그아웃</button>
+      </div>
+    </nav>
   </section>
   <script>window.__HERMES_PREFILL__ = __PREFILL_JSON__;</script>
   <script>
@@ -446,13 +631,22 @@ const html = `<!doctype html>
     const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
     const verdictLabels = { allow: "허용", warn: "주의", block: "차단" };
     const presets = [
-      { id: "briefing", label: "오늘 브리핑", body: "전체 Hyphen Studio의 오늘 브리핑을 보여줘", type: "studio_overview" },
-      { id: "priorities", label: "오늘 우선순위", body: "전체 Hyphen Studio 프로젝트의 오늘 우선순위를 정리해줘", type: "studio_priorities" },
-      { id: "blocked", label: "막힌 프로젝트", body: "전체 Hyphen Studio에서 지금 막힌 프로젝트를 알려줘", type: "studio_blockers" },
-      { id: "audit", label: "사업 현황 갱신 점검", body: "전체 Hyphen Studio 사업 현황에서 갱신이 필요한 항목을 점검해줘", type: "studio_evidence_audit" },
-      { id: "mac", label: "Mac 상태 점검", body: "Mac 상태를 점검해줘", type: "mac_status" },
-      { id: "deploy", label: "배포 상태 확인", body: "배포 상태를 확인해줘", type: "deployment_status" },
+      { id: "briefing", label: "오늘 브리핑", group: "business", body: "전체 Hyphen Studio의 오늘 브리핑을 보여줘", type: "studio_overview" },
+      { id: "priorities", label: "오늘 우선순위", group: "business", body: "전체 Hyphen Studio 프로젝트의 오늘 우선순위를 정리해줘", type: "studio_priorities" },
+      { id: "blocked", label: "막힌 프로젝트", group: "business", body: "전체 Hyphen Studio에서 지금 막힌 프로젝트를 알려줘", type: "studio_blockers" },
+      { id: "audit", label: "사업 현황 갱신 점검", group: "business", body: "전체 Hyphen Studio 사업 현황에서 갱신이 필요한 항목을 점검해줘", type: "studio_evidence_audit" },
+      { id: "mac", label: "Mac 상태 점검", group: "ops", body: "Mac 상태를 점검해줘", type: "mac_status" },
+      { id: "deploy", label: "배포 상태 확인", group: "ops", body: "배포 상태를 확인해줘", type: "deployment_status" },
+      { id: "inspect", label: "프로젝트 점검", group: "dev", body: "선택한 프로젝트의 저장소 상태를 점검하고 이상을 보고해줘", type: "project_inspect" },
+      { id: "dev", label: "개발 요청", group: "dev", body: "선택한 프로젝트에 개선 작업을 요청해줘: ", type: "development" },
     ];
+    const presetGroups = [
+      { id: "business", title: "사업", note: "전체 Hyphen Studio 기준 · 읽기 전용" },
+      { id: "ops", title: "운영", note: "선택한 프로젝트 기준" },
+      { id: "dev", title: "개발", note: "선택한 프로젝트 기준 · 승인 후 실행" },
+    ];
+    const auditFieldLabels = { status: "상태", lifecycle: "사업 단계", businessType: "사업 유형", owner: "담당자", evidenceStatus: "근거", repositories: "저장소", deploys: "배포", dataStores: "데이터 저장소", kpis: "지표", revenue: "매출" };
+    const auditPriorityLabels = { high: "높음", medium: "보통", low: "낮음" };
     const capabilityGuidance = {
       project_inspect: "선택한 프로젝트에는 저장소 점검 연결이 없습니다. 저장소가 연결된 프로젝트를 선택해주세요.",
       development: "선택한 프로젝트에는 저장소 개발 연결이 없습니다. 저장소가 연결된 프로젝트를 선택해주세요.",
@@ -467,6 +661,9 @@ const html = `<!doctype html>
     let projectNames = {};
     let projectCapabilities = {};
     let prefillApplied = false;
+    let connState = null;
+    let bizState = null;
+    let s1Summary = null;
     async function api(path, init) {
       const res = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...init });
       const data = await res.json().catch(() => ({}));
@@ -478,11 +675,14 @@ const html = `<!doctype html>
       return data;
     }
     function setConn(connected) {
+      connState = connected;
       const el = $("conn");
       el.textContent = connected ? "연결됨" : "연결 끊김 · 재시도 중";
       el.classList.toggle("offline", !connected);
+      el.classList.toggle("ok", connected);
     }
     function renderBusinessStatus(data) {
+      bizState = data || null;
       const el = $("biz");
       if (!data || !data.state) { el.hidden = true; return; }
       const basis = data.registryUpdatedAt ? " · 기준 " + data.registryUpdatedAt : "";
@@ -499,6 +699,7 @@ const html = `<!doctype html>
       el.hidden = false;
     }
     function renderEvidence(summary) {
+      s1Summary = summary || null;
       const el = $("evidence");
       const observed = summary ? summary.observedOk + summary.observedError : 0;
       if (summary && observed > 0) {
@@ -562,21 +763,82 @@ const html = `<!doctype html>
       if (type === "hermes_ops") return "승인하면 Hermes가 검증된 운영 명령 하나를 골라 Mac Studio에서 실행합니다.";
       return "승인하면 Mac Studio 워커가 이 요청을 실행합니다.";
     }
+    function homeStateHtml() {
+      const chips = [];
+      if (connState === true) chips.push('<span class="state-chip ok">연결됨</span>');
+      else if (connState === false) chips.push('<span class="state-chip down">연결 끊김 · 재시도 중</span>');
+      if (bizState && bizState.state === "fresh") chips.push('<span class="state-chip ok">사업 데이터 최신</span>');
+      else if (bizState && bizState.state === "stale") chips.push('<span class="state-chip warn">사업 데이터 지연</span>');
+      else if (bizState && bizState.state) chips.push('<span class="state-chip down">사업 데이터 사용 불가</span>');
+      if (s1Summary && s1Summary.observedOk + s1Summary.observedError > 0) {
+        chips.push('<span class="state-chip">빠른 판단 ' + (s1Summary.observedOk + s1Summary.observedError) + '/' + s1Summary.totalEligibleRequests + '건 관찰</span>');
+      }
+      return chips.length ? '<div class="home-state">' + chips.join("") + '</div>' : "";
+    }
+    function homeHtml() {
+      const groups = presetGroups.map((group) =>
+        '<section class="action-group"><h3>' + esc(group.title) + '</h3><p class="group-note">' + esc(group.note) + '</p><div class="preset-grid">' +
+        presets.filter((preset) => preset.group === group.id).map((preset) =>
+          '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
+        '</div></section>').join("");
+      return '<div class="home">' +
+        '<p class="home-eyebrow">Mac Studio · Hermes</p>' +
+        '<h1>안녕하세요. 무엇을 확인할까요?</h1>' +
+        '<p class="muted">아래에서 자주 쓰는 작업을 고르거나, 자연스럽게 요청을 적어주세요.</p>' +
+        homeStateHtml() +
+        '<div class="action-groups">' + groups + '</div>' +
+        '<p class="preset-scope">사업 작업은 전체 Hyphen Studio 기준으로 읽기만 합니다. 운영·개발 작업은 위에서 선택한 프로젝트에 적용됩니다. 빠른 작업은 내용만 채워주고, 실행은 항상 직접 보내야 시작됩니다.</p>' +
+        '</div>';
+    }
+    function auditMetric(value, label) {
+      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+    function auditView(audit) {
+      const prio = audit.summary.byPriority;
+      const items = audit.items.map((item) =>
+        '<details class="audit-item"><summary><span class="audit-name">' + esc(item.projectName) + '</span><span class="audit-badge ' + esc(item.priority) + '">' + esc(auditPriorityLabels[item.priority] || item.priority) + '</span></summary>' +
+        '<div class="audit-body"><div class="audit-chips">' + item.missingFields.map((field) => '<span class="chip">' + esc(auditFieldLabels[field] || field) + '</span>').join("") + '</div>' +
+        '<ul class="audit-actions">' + item.actions.map((action) => '<li>' + esc(action) + '</li>').join("") + '</ul></div></details>').join("");
+      return '<div class="audit-view">' +
+        '<div class="audit-metrics">' +
+        auditMetric(audit.coverage.hyphenCore, "검토 범위") +
+        auditMetric(audit.coverage.statusUnknown, "상태 미상") +
+        auditMetric(audit.coverage.evidenceUnverified, "근거 미충족") +
+        auditMetric(audit.coverage.ownerMissing, "담당자 미지정") +
+        '</div>' +
+        '<p class="audit-lead">갱신 검토 대상 ' + esc(audit.summary.projectsNeedingReview) + '개 · 대기 중인 확인 요청 ' + esc(audit.summary.pendingEvidence) + '건</p>' +
+        '<div class="audit-prio">우선순위 <span class="chip prio-high">높음 ' + esc(prio.high) + '</span><span class="chip prio-medium">보통 ' + esc(prio.medium) + '</span><span class="chip prio-low">낮음 ' + esc(prio.low) + '</span></div>' +
+        (items ? '<div class="audit-items">' + items + '</div>' : '<p class="muted">모든 항목이 검증 완료 — 갱신이 필요한 프로젝트가 없습니다.</p>') +
+        (audit.remaining > 0 ? '<p class="audit-more">… 외 ' + esc(audit.remaining) + '개 프로젝트가 더 있습니다.</p>' : '') +
+        '</div>';
+    }
+    function resultHtml(active) {
+      const audit = active.briefing && active.briefing.audit;
+      if (active.status === "done" && audit && audit.kind === "audit-v1" && audit.coverage && audit.summary && Array.isArray(audit.items)) return auditView(audit);
+      if (active.result) return '<div class="result-text">' + esc(active.result) + '</div>';
+      return '<div class="result-meta">' + esc(new Date(active.updated_at).toLocaleString()) + '</div>';
+    }
     function shadowPanel(shadow) {
       if (!shadow || shadow.kind !== "hermes.system1.shadow") return "";
-      const head = '<div class="s1-head"><span class="s1-title">빠른 판단</span><span class="s1-badge">관찰 전용 · 실행에 영향 없음</span></div>';
-      if (shadow.status !== "ok") return '<div class="s1">' + head + '<div class="s1-row"><span>관찰 결과를 사용할 수 없습니다</span></div></div>';
+      const head = '<summary class="s1-head"><span class="s1-title">빠른 판단</span><span class="s1-badge">관찰 전용 · 실행에 영향 없음</span></summary>';
+      if (shadow.status !== "ok") return '<details class="fold s1">' + head + '<div class="s1-body"><div class="s1-row"><span>관찰 결과를 사용할 수 없습니다</span></div></div></details>';
       const confidence = typeof shadow.confidence === "number" && shadow.confidence >= 0 && shadow.confidence <= 1 ? Math.round(shadow.confidence * 100) + "%" : "-";
-      return '<div class="s1">' + head +
+      return '<details class="fold s1">' + head + '<div class="s1-body">' +
         '<div class="s1-row"><span>예상 경로</span><strong>' + esc(routeLabels[shadow.route] || "확인 필요") + '</strong></div>' +
         '<div class="s1-row"><span>정책 판정</span><strong>' + esc(verdictLabels[shadow.policyVerdict] || "확인 필요") + '</strong></div>' +
-        '<div class="s1-row"><span>확신도</span><strong>' + confidence + '</strong></div></div>';
+        '<div class="s1-row"><span>확신도</span><strong>' + confidence + '</strong></div></div></details>';
     }
     function refreshPresetGuidance() {
       const el = $("formStatus");
       const type = $("type").value;
       const project = $("project").value;
       const capabilities = projectCapabilities[project] || [];
+      const scopeEl = $("scopeLine");
+      if (scopeEl) {
+        scopeEl.textContent = studioScopeTypes.has(type)
+          ? "범위: 전체 Hyphen Studio"
+          : "프로젝트: " + (projectNames[project] || "선택 없음");
+      }
       if (capabilityGatedTypes.includes(type) && project && !capabilities.includes(type)) {
         el.textContent = capabilityGuidance[type] || capabilityGuidanceFallback;
         el.dataset.guide = "1";
@@ -621,15 +883,18 @@ const html = `<!doctype html>
     function render(requests) {
       const sorted = [...requests].sort((a, b) => b.created_at - a.created_at);
       if (!current && !composingNew && sorted[0]) current = sorted[0].id;
-      $("threads").innerHTML = sorted.map((r) => '<button class="thread" data-thread="' + r.id + '"><strong>' + esc(r.title) + '</strong><span>' + esc(statusLabels[r.status] || r.status) + ' · ' + esc(labels[r.resolved_type || r.type] || r.resolved_type || r.type) + '</span></button>').join("");
+      const threadHtml = sorted.map((r) =>
+        '<button class="thread" type="button" data-thread="' + r.id + '"' + (r.id === current ? ' aria-current="true"' : "") + '><strong>' + esc(r.title) + '</strong><span>' + esc(statusLabels[r.status] || r.status) + ' · ' + esc(labels[r.resolved_type || r.type] || r.resolved_type || r.type) + '</span></button>').join("")
+        || '<p class="threads-empty">아직 요청이 없습니다.</p>';
+      $("threads").innerHTML = threadHtml;
+      $("drawerThreads").innerHTML = threadHtml;
       const active = current ? sorted.find((r) => r.id === current) : null;
       if (!active) {
-        $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>프로젝트를 고르고 자연스럽게 요청하면 Hermes가 Mac Studio에서 안전하게 처리합니다.</p><div class="preset-grid">' +
-          presets.map((preset) => '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
-          '</div><p class="preset-scope">브리핑·우선순위·막힌 프로젝트·갱신 점검은 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
+        $("messages").innerHTML = homeHtml();
         return;
       }
       const events = (active.events || []).slice(-6).reverse().map((event) => '<div class="event"><span>' + esc(new Date(event.at).toLocaleTimeString()) + '</span><strong>' + esc(event.message) + '</strong></div>').join("");
+      const eventCount = (active.events || []).length;
       const activeType = active.resolved_type || active.type;
       const scope = studioScopeTypes.has(activeType) ? "전체 Hyphen Studio" : (projectNames[active.target_project] || active.target_project || "");
       $("messages").innerHTML = '<article class="message user"><div class="avatar">나</div><div class="bubble"><h2>' + esc(active.title) + '</h2><p>' + esc(active.body) + '</p></div></article>' +
@@ -639,11 +904,11 @@ const html = `<!doctype html>
         (active.briefing && active.briefing.updatedAt ? '<p class="progress-copy">소스 ' + esc(active.briefing.sourceLabel) + ' · 업데이트 ' + esc(active.briefing.updatedAt) + '</p>' : '') +
         (active.progress ? '<p class="progress-copy">' + esc(active.progress) + '</p>' : '') +
         (active.status === 'approval_required' ? '<p class="progress-copy">' + esc(approvalText(active)) + '</p>' : '') +
-        (active.result ? '<pre>' + esc(active.result) + '</pre>' : '<pre>' + esc(new Date(active.updated_at).toLocaleString()) + '</pre>') +
-        (events ? '<div class="event-list">' + events + '</div>' : '') +
-        (active.status === 'approval_required' ? '<div class="block-head"><button class="primary" data-approve="' + active.id + '">실행 승인</button><button class="pill" data-cancel="' + active.id + '">취소</button></div>' : '') +
-        (active.status === 'queued' ? '<div class="block-head"><button class="pill" data-cancel="' + active.id + '">취소</button></div>' : '') +
-        (['failed', 'canceled'].includes(active.status) ? '<div class="block-head"><button class="primary" data-retry="' + active.id + '">다시 실행</button></div>' : '') +
+        resultHtml(active) +
+        (events ? '<details class="fold events-fold"><summary>최근 기록 ' + esc(eventCount) + '건</summary><div class="event-list">' + events + '</div></details>' : '') +
+        (active.status === 'approval_required' ? '<div class="block-head"><button class="primary" type="button" data-approve="' + active.id + '">실행 승인</button><button class="pill" type="button" data-cancel="' + active.id + '">취소</button></div>' : '') +
+        (active.status === 'queued' ? '<div class="block-head"><button class="pill" type="button" data-cancel="' + active.id + '">취소</button></div>' : '') +
+        (['failed', 'canceled'].includes(active.status) ? '<div class="block-head"><button class="primary" type="button" data-retry="' + active.id + '">다시 실행</button></div>' : '') +
         '</div></div></article>';
       $("messages").scrollTop = $("messages").scrollHeight;
     }
@@ -651,12 +916,37 @@ const html = `<!doctype html>
     $("requestForm").onsubmit = async (event) => { event.preventDefault(); $("formStatus").textContent = ""; delete $("formStatus").dataset.guide; const body = $("body").value.trim(); if (!body) return; try { const created = await api("/api/requests", { method: "POST", body: JSON.stringify({ type: $("type").value, title: titleFrom(body), body, target_project: $("project").value || "hermes-mac-ops" }) }); current = created.request.id; composingNew = false; $("body").value = ""; await load(); } catch (error) { if (error.message === "project_capability_not_enabled") { $("formStatus").textContent = capabilityGuidance[$("type").value] || capabilityGuidanceFallback; $("formStatus").dataset.guide = "1"; } else { $("formStatus").textContent = error.message || "요청을 보내지 못했습니다."; } } };
     $("threads").onclick = async (event) => { const id = event.target?.closest?.("[data-thread]")?.dataset?.thread; if (id) { current = id; composingNew = false; await load(); } };
     $("messages").onclick = async (event) => { const presetId = event.target?.closest?.("[data-preset]")?.dataset?.preset; if (presetId) { applyPreset(presetId); return; } const approveId = event.target?.dataset?.approve; const cancelId = event.target?.dataset?.cancel; const retryId = event.target?.dataset?.retry; if (approveId) await api("/api/requests/" + approveId + "/approve", { method: "POST", body: "{}" }); if (cancelId) await api("/api/requests/" + cancelId + "/cancel", { method: "POST", body: "{}" }); if (retryId) await api("/api/requests/" + retryId + "/retry", { method: "POST", body: "{}" }); if (approveId || cancelId || retryId) await load(); };
-    $("newChat").onclick = () => { current = null; composingNew = true; $("body").focus(); void load(); };
+    function goHome() { current = null; composingNew = false; void load(); }
+    function newRequest() { current = null; composingNew = true; $("body").focus(); void load(); }
+    async function logout() { await api("/api/logout", { method: "POST", body: "{}" }); await load(); }
+    function openDrawer() {
+      $("drawer").hidden = false;
+      $("drawerScrim").hidden = false;
+      $("menuBtn").setAttribute("aria-expanded", "true");
+      $("drawerClose").focus();
+    }
+    function closeDrawer(restoreFocus) {
+      $("drawer").hidden = true;
+      $("drawerScrim").hidden = true;
+      $("menuBtn").setAttribute("aria-expanded", "false");
+      if (restoreFocus) $("menuBtn").focus();
+    }
+    $("menuBtn").onclick = () => openDrawer();
+    $("drawerClose").onclick = () => closeDrawer(true);
+    $("drawerScrim").onclick = () => closeDrawer(false);
+    $("drawerHome").onclick = () => { closeDrawer(false); goHome(); };
+    $("drawerNew").onclick = () => { closeDrawer(false); newRequest(); };
+    $("drawerRefresh").onclick = () => { closeDrawer(false); void load(); };
+    $("drawerLogout").onclick = logout;
+    $("drawerThreads").onclick = async (event) => { const id = event.target?.closest?.("[data-thread]")?.dataset?.thread; if (id) { closeDrawer(false); current = id; composingNew = false; await load(); } };
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("drawer").hidden) closeDrawer(true); });
+    $("homeBtn").onclick = goHome;
+    $("newChat").onclick = newRequest;
     $("refresh").onclick = load;
     $("refreshTop").onclick = load;
     $("project").onchange = refreshPresetGuidance;
     $("type").onchange = refreshPresetGuidance;
-    $("logout").onclick = async () => { await api("/api/logout", { method: "POST", body: "{}" }); await load(); };
+    $("logout").onclick = logout;
     $("body").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("requestForm").requestSubmit(); } });
     load();
   </script>
@@ -1092,6 +1382,42 @@ function renderEvidenceAudit(audit) {
   return lines.join("\n").slice(0, studioResultMaxChars);
 }
 
+// Bounded structured view of the audit for the console renderer. Every field
+// is already allowlisted by buildEvidenceAudit — names capped, missingFields a
+// fixed enum, actions fixed Korean phrases — so this only re-slices; no raw
+// registry text, evidence refs, paths, or source hash ever crosses.
+function auditViewModel(audit) {
+  const items = audit.items.slice(0, studioAuditTopItems).map((item) => ({
+    projectId: item.projectId,
+    projectName: item.projectName,
+    businessGroup: item.businessGroup,
+    priority: item.priority,
+    missingFields: [...item.missingFields],
+    actions: item.actions.slice(0, 4),
+  }));
+  return {
+    kind: "audit-v1",
+    coverage: {
+      hyphenCore: audit.coverage.hyphenCore,
+      excluded: audit.coverage.excluded,
+      statusUnknown: audit.coverage.statusUnknown,
+      evidenceUnverified: audit.coverage.evidenceUnverified,
+      ownerMissing: audit.coverage.ownerMissing,
+    },
+    summary: {
+      projectsNeedingReview: audit.summary.projectsNeedingReview,
+      pendingEvidence: audit.summary.pendingEvidence,
+      byPriority: {
+        high: audit.summary.byPriority.high,
+        medium: audit.summary.byPriority.medium,
+        low: audit.summary.byPriority.low,
+      },
+    },
+    items,
+    remaining: Math.max(0, audit.items.length - items.length),
+  };
+}
+
 // Deterministic read-only evidence audit, generated synchronously in the
 // server — never queued for the worker, never needs approval.
 async function runStudioEvidenceAudit(request) {
@@ -1121,6 +1447,7 @@ async function runStudioEvidenceAudit(request) {
       sourceLabel: studioSourceLabel,
       updatedAt: audit.source.updatedAt,
       itemCount: audit.summary.projectsNeedingReview,
+      audit: auditViewModel(audit),
     });
     addEvent(request, "갱신 점검표 생성");
   } catch (error) {

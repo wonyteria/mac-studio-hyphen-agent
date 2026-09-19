@@ -253,6 +253,124 @@ test("빠른 판단 panel renders only allowlisted observation fields", async ()
   }
 });
 
+test("mobile history drawer is accessible and mirrors the sidebar contract", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Menu button only appears on narrow screens and controls the drawer.
+  assert.match(html, /id="menuBtn" class="icon-btn menu-btn"[^>]*aria-expanded="false"[^>]*aria-controls="drawer"/);
+  assert.match(html, /\.menu-btn \{ display: none; \}/);
+  assert.match(html, /@media \(max-width: 760px\)[\s\S]*?\.menu-btn \{ display: inline-flex; \}/);
+  // The drawer is a labelled modal sheet with the full navigation contract.
+  assert.match(html, /id="drawer" class="drawer" hidden aria-label="요청 기록" role="dialog" aria-modal="true"/);
+  assert.match(html, /id="drawerScrim" class="drawer-scrim" hidden/);
+  for (const id of ["drawerClose", "drawerHome", "drawerNew", "drawerThreads", "drawerRefresh", "drawerLogout"]) {
+    assert.ok(html.includes(`id="${id}"`), `missing drawer control ${id}`);
+  }
+  // Escape closes it, scrim tap closes it, selecting a request closes it.
+  assert.match(html, /event\.key === "Escape" && !\$\("drawer"\)\.hidden/);
+  assert.match(html, /\$\("drawerScrim"\)\.onclick = \(\) => closeDrawer\(false\)/);
+  assert.match(html, /\$\("drawerThreads"\)\.onclick = async \(event\)[^\n]*closeDrawer\(false\); current = id/);
+  // Focus returns to the menu button on close.
+  assert.match(html, /if \(restoreFocus\) \$\("menuBtn"\)\.focus\(\)/);
+  // The thread list renders into both sidebar and drawer from one source.
+  assert.match(html, /\$\("drawerThreads"\)\.innerHTML = threadHtml/);
+});
+
+test("persistent Home entry renders greeting, live state, and grouped actions", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Reachable from desktop sidebar and the mobile drawer.
+  assert.match(html, /id="homeBtn" class="new-chat"[^>]*>홈 · 빠른 작업/);
+  assert.match(html, /id="drawerHome" class="drawer-action"[^>]*>홈 · 빠른 작업/);
+  assert.match(html, /\$\("homeBtn"\)\.onclick = goHome/);
+  assert.match(html, /function goHome\(\) \{ current = null; composingNew = false/);
+  // Grouped launcher: business / operations / development categories.
+  const home = html.match(/function homeHtml\(\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(home, "homeHtml missing");
+  assert.match(html, /action-groups/);
+  assert.match(html, /id: "business", title: "사업"/);
+  assert.match(html, /id: "ops", title: "운영"/);
+  assert.match(html, /id: "dev", title: "개발"/);
+  for (const label of ["프로젝트 점검", "개발 요청"]) {
+    assert.ok(html.includes(`label: "${label}"`), `missing preset ${label}`);
+  }
+  assert.match(html, /id: "inspect"[^\n]*type: "project_inspect"/);
+  assert.match(html, /id: "dev"[^\n]*type: "development"/);
+  // Live state strip reads cached truth, never fabricated placeholders.
+  assert.match(html, /function homeStateHtml\(\)[\s\S]*?connState/);
+  assert.match(html, /bizState && bizState\.state === "fresh"/);
+  // Scope copy distinguishes studio-wide vs selected-project actions.
+  assert.match(html, /전체 Hyphen Studio 기준으로 읽기만 합니다/);
+  assert.match(html, /선택한 프로젝트에 적용됩니다/);
+});
+
+test("composer stacks fields on narrow screens and shows plain-Korean scope", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  assert.match(html, /<label class="field"><span>프로젝트<\/span><select id="project"/);
+  assert.match(html, /<label class="field"><span>작업 종류<\/span><select id="type"/);
+  assert.match(html, /id="scopeLine" class="scope-line"/);
+  assert.match(html, /scopeEl\.textContent = studioScopeTypes\.has\(type\)/);
+  assert.match(html, /"프로젝트: " \+ \(projectNames\[project\]/);
+  // Fields wrap below 760px and go fully stacked below 420px.
+  assert.match(html, /\.composer-fields \{ display: flex; flex: 1; flex-wrap: wrap; gap: 8px; min-width: 0; \}/);
+  assert.match(html, /@media \(max-width: 760px\)[\s\S]*?\.field \{ flex-basis: 45%; \}/);
+  assert.match(html, /@media \(max-width: 420px\)[\s\S]*?\.field \{ flex-basis: 100%; \}/);
+  // Enter-to-send and Shift+Enter newline preserved.
+  assert.match(html, /event\.key === "Enter" && !event\.shiftKey/);
+});
+
+test("results render as readable panels; the audit gets a bounded structured view", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // No monospace dump — text results use a wrapping sans-serif panel.
+  assert.equal(html.includes("<pre>"), false, "results must not render as pre blocks");
+  assert.match(html, /\.result-text \{[^}]*overflow-wrap: anywhere[^}]*white-space: pre-wrap/);
+  assert.match(html, /'<div class="result-text">' \+ esc\(active\.result\) \+ '<\/div>'/);
+  // Structured audit view model contract — the builder lives in the server
+  // module, so check the source rather than the served page.
+  const serverSource = await readFile(fileURLToPath(new URL("../mini-server.mjs", import.meta.url)), "utf8");
+  assert.match(serverSource, /function auditViewModel\(audit\)/);
+  assert.match(serverSource, /kind: "audit-v1"/);
+  assert.match(serverSource, /audit: auditViewModel\(audit\)/);
+  assert.match(html, /audit\.kind === "audit-v1"/);
+  const view = html.match(/function auditView\(audit\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(view, "auditView missing");
+  for (const key of ["audit.coverage.hyphenCore", "audit.coverage.statusUnknown", "audit.coverage.evidenceUnverified", "audit.coverage.ownerMissing", "audit.summary.projectsNeedingReview", "audit.summary.pendingEvidence", "audit.remaining"]) {
+    assert.ok(view[0].includes(key), `auditView should read ${key}`);
+  }
+  // Korean labels replace internal field tokens in the UI.
+  assert.match(html, /auditFieldLabels = \{ status: "상태", lifecycle: "사업 단계", businessType: "사업 유형", owner: "담당자"/);
+  // Fallback: old records without briefing.audit still render safely.
+  const result = html.match(/function resultHtml\(active\) \{[\s\S]*?\n {4}\}/);
+  assert.ok(result, "resultHtml missing");
+  assert.match(result[0], /audit\.kind === "audit-v1"/);
+  assert.match(result[0], /Array\.isArray\(audit\.items\)/);
+  // Observation and event history are collapsible, subordinate regions.
+  assert.match(html, /<details class="fold s1">/);
+  assert.match(html, /<details class="fold events-fold"><summary>최근 기록/);
+  // No source-hash fingerprint anywhere in the UI contract.
+  assert.equal(html.includes("sourceHash"), false);
+});
+
+test("layout prevents horizontal overflow down to 320px", async () => {
+  const html = await (await fetch(baseUrl)).text();
+  // Single-column app grid on mobile; every grid/flex child can shrink.
+  assert.match(html, /#app \{[^}]*grid-template-columns: 272px minmax\(0, 1fr\)/);
+  assert.match(html, /@media \(max-width: 760px\) \{\s*#app \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(html, /\.chat \{[^}]*min-width: 0/);
+  assert.match(html, /\.messages \{[^}]*min-width: 0/);
+  assert.match(html, /\.chat-title \{[^}]*min-width: 0/);
+  assert.match(html, /\.status-row \{[^}]*flex-wrap: wrap/);
+  assert.match(html, /\.chat-top \{[^}]*flex-wrap: wrap/);
+  // 100dvh keeps mobile browser chrome honest.
+  assert.match(html, /height: 100dvh/);
+  // Touch targets: presets, send button, thread rows, drawer actions ≥44px.
+  assert.match(html, /\.preset \{[^}]*min-height: 44px/);
+  assert.match(html, /\.send \{[^}]*height: 44px;[^}]*width: 44px/);
+  assert.match(html, /\.thread \{[^}]*min-height: 44px/);
+  assert.match(html, /\.drawer-action \{[^}]*min-height: 44px/);
+  // Visible focus + reduced-motion safety.
+  assert.match(html, /:focus-visible \{\s*outline: 2px solid var\(--focus\)/);
+  assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
 test("requires login for requests and exposes only public project fields", async () => {
   const unauthorized = await request("/api/requests", {}, null);
   assert.equal(unauthorized.response.status, 401);

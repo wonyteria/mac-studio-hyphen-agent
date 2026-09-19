@@ -813,16 +813,16 @@ function auditText(value, maxChars) {
 // owner/revenue, and an empty list for inventory arrays. The action phrases
 // are fixed Korean instructions — never a guessed value.
 const EVIDENCE_AUDIT_FIELDS = [
-  { field: "status", missing: (p) => p.status === "unknown", action: "운영 상태를 확인해 status를 갱신" },
-  { field: "lifecycle", missing: (p) => p.lifecycle === "unknown", action: "현재 단계를 확인해 lifecycle을 갱신" },
-  { field: "businessType", missing: (p) => p.businessType === "unknown", action: "사업 유형을 분류해 businessType을 갱신" },
-  { field: "owner", missing: (p) => p.owner === null, action: "담당자를 지정해 owner를 갱신" },
-  { field: "evidenceStatus", missing: (p) => p.evidenceStatus !== "verified", action: "근거를 수집해 evidenceStatus를 갱신" },
-  { field: "repositories", missing: (p) => p.repositories.length === 0, action: "연결된 저장소가 있으면 repositories에 등록" },
-  { field: "deploys", missing: (p) => p.deploys.length === 0, action: "배포 위치가 있으면 deploys에 등록" },
-  { field: "dataStores", missing: (p) => p.dataStores.length === 0, action: "데이터 저장소가 있으면 dataStores에 등록" },
-  { field: "kpis", missing: (p) => p.kpis.length === 0, action: "핵심 지표가 있으면 kpis에 등록" },
-  { field: "revenue", missing: (p) => p.revenue === null, action: "매출이 발생했으면 revenue를 기록" },
+  { field: "status", missing: (p) => p.status === "unknown", action: "운영 상태를 확인해 기록" },
+  { field: "lifecycle", missing: (p) => p.lifecycle === "unknown", action: "현재 사업 단계를 확인해 기록" },
+  { field: "businessType", missing: (p) => p.businessType === "unknown", action: "사업 유형을 분류해 기록" },
+  { field: "owner", missing: (p) => p.owner === null, action: "담당자를 지정해 기록" },
+  { field: "evidenceStatus", missing: (p) => p.evidenceStatus !== "verified", action: "근거를 수집해 검증 상태를 갱신" },
+  { field: "repositories", missing: (p) => p.repositories.length === 0, action: "연결된 저장소가 있으면 등록" },
+  { field: "deploys", missing: (p) => p.deploys.length === 0, action: "배포 위치가 있으면 등록" },
+  { field: "dataStores", missing: (p) => p.dataStores.length === 0, action: "데이터 저장소가 있으면 등록" },
+  { field: "kpis", missing: (p) => p.kpis.length === 0, action: "핵심 지표가 있으면 등록" },
+  { field: "revenue", missing: (p) => p.revenue === null, action: "매출 발생 여부를 기록" },
 ];
 
 const AUDIT_PRIORITY_RANK = { high: 2, medium: 1, low: 0 };
