@@ -346,6 +346,8 @@ test("studio_evidence_audit POST completes synchronously — never queued for th
   assert.equal(request.lease_expires_at, null);
   assert.ok(request.result.includes("사업 현황 갱신 점검"));
   assert.ok(request.result.includes("공백 집계"));
+  assert.match(request.result, /담당자 미지정 \d+개/, "coverage line uses natural Korean, not field tokens");
+  assert.equal(request.result.includes("owner 미지정"), false, "internal field token must not surface");
   assert.ok(request.result.includes("우선 갱신 작업"));
   assert.ok(request.result.includes("알파"), "project names render");
   assert.equal(request.result.includes("film"), false, "29sfilm never renders");

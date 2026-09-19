@@ -235,6 +235,19 @@ test("studio_priorities produces a bounded deterministic owner-facing result", a
   assert.equal(request.result.includes("지문"), false);
 });
 
+test("owner-facing text never exposes the internal 'owner 미지정' token", async () => {
+  // The field name stays a schema key; every user-facing surface renders
+  // the natural Korean wording instead.
+  for (const file of ["mini-server.mjs", "scripts/hermes-business-registry.mjs"]) {
+    const source = await readFile(join(repoRoot, file), "utf8");
+    assert.equal(source.includes("owner 미지정"), false, `${file} must not emit 'owner 미지정'`);
+  }
+  const { data } = await createRequest(servers.ok, { type: "studio_overview" });
+  assert.equal(data.request.status, "done");
+  assert.match(data.request.result, /담당자 미지정 \d+개/, "coverage line uses Korean wording");
+  assert.equal(data.request.result.includes("owner 미지정"), false);
+});
+
 test("studio_blockers renders blocker details, not a raw CLI dump", async () => {
   const { response, data } = await createRequest(servers.ok, {
     type: "studio_blockers",

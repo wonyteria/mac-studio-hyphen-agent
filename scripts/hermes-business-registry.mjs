@@ -700,7 +700,7 @@ export function buildBusinessBriefing(registry) {
       return briefingItem(
         project,
         "owner_action",
-        `${parts.join(" · ")}${project.owner === null ? " — owner 미지정" : ""}`,
+        `${parts.join(" · ")}${project.owner === null ? " — 담당자 미지정" : ""}`,
         basis,
         {
           owner: project.owner,
@@ -777,7 +777,7 @@ export function renderBriefingMarkdown(briefing) {
     lines.push(`  - 제외: ${entry.organization} ${entry.count}개`);
   }
   lines.push(
-    `- 미검증 현황: status unknown ${briefing.coverage.statusUnknown}개 · evidence 미충족 ${briefing.coverage.evidenceUnverified}개 · owner 미지정 ${briefing.coverage.ownerMissing}개`,
+    `- 미검증 현황: status unknown ${briefing.coverage.statusUnknown}개 · evidence 미충족 ${briefing.coverage.evidenceUnverified}개 · 담당자 미지정 ${briefing.coverage.ownerMissing}개`,
     "",
     ...markdownSection("오늘의 상위 3개 우선순위", briefing.sections.topPriorities),
     ...markdownSection("막힌 일", briefing.sections.blocked),

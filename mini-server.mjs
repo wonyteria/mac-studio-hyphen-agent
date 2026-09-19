@@ -1286,7 +1286,7 @@ function renderStudioView(view, briefing) {
     lines.push("");
   }
   lines.push(
-    `미검증 현황: 상태 미상 ${briefing.coverage.statusUnknown}개 · 근거 미충족 ${briefing.coverage.evidenceUnverified}개 · owner 미지정 ${briefing.coverage.ownerMissing}개`,
+    `미검증 현황: 상태 미상 ${briefing.coverage.statusUnknown}개 · 근거 미충족 ${briefing.coverage.evidenceUnverified}개 · 담당자 미지정 ${briefing.coverage.ownerMissing}개`,
   );
   return lines.join("\n").slice(0, studioResultMaxChars);
 }
@@ -1359,7 +1359,7 @@ function renderEvidenceAudit(audit) {
     `소스: ${studioSourceLabel} · 업데이트 ${audit.source.updatedAt}`,
     `범위: hyphen 코어 ${audit.coverage.hyphenCore}개 프로젝트 (제외 ${audit.coverage.excluded}개)`,
     "",
-    `공백 집계: 상태 미상 ${audit.coverage.statusUnknown}개 · 근거 미충족 ${audit.coverage.evidenceUnverified}개 · owner 미지정 ${audit.coverage.ownerMissing}개`,
+    `공백 집계: 상태 미상 ${audit.coverage.statusUnknown}개 · 근거 미충족 ${audit.coverage.evidenceUnverified}개 · 담당자 미지정 ${audit.coverage.ownerMissing}개`,
     `갱신 검토 대상 ${audit.summary.projectsNeedingReview}개 · 대기 중인 확인 요청 ${audit.summary.pendingEvidence}건`,
     `우선순위: 높음 ${audit.summary.byPriority.high}개 · 보통 ${audit.summary.byPriority.medium}개 · 낮음 ${audit.summary.byPriority.low}개`,
     "",

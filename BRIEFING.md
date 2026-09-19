@@ -36,7 +36,7 @@ Five sections, in order. Every item carries `projectId`, `projectName`, `basis` 
 2. **막힌 일** — projects with explicit `blockers` entries.
 3. **매출·고객 신호** — projects with an explicit `revenue` object or `kpis` entries; amounts, units, sources, and dates are copied verbatim.
 4. **시스템 이상** — `status: down`/`degraded` only. Null/absent fields such as `backup: null` mean *unknown/unverified* in this contract, not "missing", and never raise an anomaly on their own.
-5. **소유자 승인이 필요한 일** — projects with `blockers` or `nextEvidence`; `owner: null` is shown as *owner 미지정* rather than guessed.
+5. **소유자 승인이 필요한 일** — projects with `blockers` or `nextEvidence`; `owner: null` is shown as *담당자 미지정* rather than guessed.
 
 Only `organization === "hyphen"` enters the core briefing. Other organizations (e.g. `29sfilm`) are counted in `coverage.excludedOrganizations` and never itemized. Empty sections render *근거 없음 — 확인 필요* instead of fabricated content.
 
