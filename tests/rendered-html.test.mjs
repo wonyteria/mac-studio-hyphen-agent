@@ -96,6 +96,7 @@ test("renders the production Hyphen Studio Agent shell", async () => {
   assert.match(html, /Hyphen Studio Agent/);
   assert.match(html, /id="project"/);
   assert.match(html, /<option value="auto">자동 판단<\/option>/);
+  assert.match(html, /<option value="studio_evidence_audit">사업 현황 갱신 점검<\/option>/);
   assert.match(html, /Hermes 4\.3 대화/);
   assert.match(html, /Hermes 운영 요청/);
   assert.match(html, /Codex 개발 요청/);
@@ -128,13 +129,14 @@ test("shows truthful connection state driven by API results", async () => {
 
 test("empty-state presets only prefill and select existing request types", async () => {
   const html = await (await fetch(baseUrl)).text();
-  for (const label of ["오늘 브리핑", "오늘 우선순위", "막힌 프로젝트", "Mac 상태 점검", "배포 상태 확인"]) {
+  for (const label of ["오늘 브리핑", "오늘 우선순위", "막힌 프로젝트", "사업 현황 갱신 점검", "Mac 상태 점검", "배포 상태 확인"]) {
     assert.ok(html.includes(`label: "${label}"`), `missing preset ${label}`);
   }
   for (const [id, type] of [
     ["briefing", "studio_overview"],
     ["priorities", "studio_priorities"],
     ["blocked", "studio_blockers"],
+    ["audit", "studio_evidence_audit"],
     ["mac", "mac_status"],
     ["deploy", "deployment_status"],
   ]) {
@@ -142,12 +144,12 @@ test("empty-state presets only prefill and select existing request types", async
   }
   // The cross-project presets scope to 전체 Hyphen Studio, not the selected
   // repository: explicit allowlisted studio types, never project_inspect.
-  for (const id of ["briefing", "priorities", "blocked"]) {
+  for (const id of ["briefing", "priorities", "blocked", "audit"]) {
     const line = html.match(new RegExp(`id: "${id}".*`, "g"));
     assert.ok(line && !line[0].includes("project_inspect"), `preset ${id} must not use project_inspect`);
   }
   assert.match(html, /전체 Hyphen Studio/, "cross-project scope must be visible");
-  assert.match(html, /studioScopeTypes = new Set\(\["studio_priorities", "studio_blockers", "studio_overview"\]\)/);
+  assert.match(html, /studioScopeTypes = new Set\(\["studio_priorities", "studio_blockers", "studio_overview", "studio_evidence_audit"\]\)/);
   assert.match(html, /"전체 Hyphen Studio" : \(projectNames/, "block-head scope for studio types");
   // The scope stays visible before submit (composer hint) and after submit
   // (block-head), and no source-hash fingerprint is ever rendered.
@@ -173,6 +175,7 @@ test("empty-state presets only prefill and select existing request types", async
     "studio_priorities",
     "studio_blockers",
     "studio_overview",
+    "studio_evidence_audit",
   ];
   for (const type of html.matchAll(/type: "([a-z_]+)"/g)) {
     assert.ok(knownTypes.includes(type[1]), `preset selects unknown type ${type[1]}`);

@@ -558,11 +558,10 @@ function priorityBasis(project) {
   return basis;
 }
 
-// Builds the read-only business briefing. Pure and deterministic: identical
-// registry input always produces identical output, and no wall-clock time,
-// environment, or random source is consulted. Unknown/null registry values are
-// reported as unverified gaps, never filled with guesses.
-export function buildBusinessBriefing(registry) {
+// Splits projects into the hyphen-core set and the per-organization exclusion
+// tally shared by the briefing and the evidence audit. 29sfilm entries are
+// never part of the core set.
+function hyphenCoreSplit(registry) {
   const hyphen = [];
   const excludedByOrg = new Map();
   for (const project of registry.projects) {
@@ -575,15 +574,28 @@ export function buildBusinessBriefing(registry) {
   const excludedOrganizations = [...excludedByOrg.entries()]
     .map(([organization, count]) => ({ organization, count }))
     .sort((a, b) => (a.organization < b.organization ? -1 : 1));
+  return { hyphen, excludedOrganizations };
+}
 
-  const coverage = {
+function registryCoverage(registry, hyphen, excludedOrganizations) {
+  return {
     projects: registry.projects.length,
     hyphenCore: hyphen.length,
     excluded: registry.projects.length - hyphen.length,
     statusUnknown: hyphen.filter((project) => project.status === "unknown").length,
     evidenceUnverified: hyphen.filter((project) => project.evidenceStatus !== "verified").length,
     ownerMissing: hyphen.filter((project) => project.owner === null).length,
+    excludedOrganizations,
   };
+}
+
+// Builds the read-only business briefing. Pure and deterministic: identical
+// registry input always produces identical output, and no wall-clock time,
+// environment, or random source is consulted. Unknown/null registry values are
+// reported as unverified gaps, never filled with guesses.
+export function buildBusinessBriefing(registry) {
+  const { hyphen, excludedOrganizations } = hyphenCoreSplit(registry);
+  const coverage = registryCoverage(registry, hyphen, excludedOrganizations);
 
   const candidates = hyphen.filter(
     (project) =>
@@ -710,7 +722,7 @@ export function buildBusinessBriefing(registry) {
       scope: registry.scope,
       consumer: registry.consumer,
     },
-    coverage: { ...coverage, excludedOrganizations },
+    coverage,
     sections: {
       topPriorities,
       blocked,
@@ -774,4 +786,131 @@ export function renderBriefingMarkdown(briefing) {
     ...markdownSection("소유자 승인이 필요한 일", briefing.sections.ownerApprovals),
   );
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+// ---- Evidence audit: read-only "사업 현황 갱신 점검" -----------------------
+//
+// A deterministic review checklist derived only from the registry's explicit
+// unset markers. It never infers facts, assigns owners, or edits the registry;
+// it only enumerates which fields are still unverified per project so an
+// operator can update them deliberately.
+
+export const EVIDENCE_AUDIT_KIND = "hyphen-evidence-audit";
+export const EVIDENCE_AUDIT_MAX_ITEMS = 50;
+export const EVIDENCE_AUDIT_PRIORITIES = new Set(["high", "medium", "low"]);
+
+const AUDIT_NAME_MAX_CHARS = 80;
+const AUDIT_ACTION_MAX_CHARS = 200;
+const AUDIT_MAX_ACTIONS = 14;
+
+// Registry strings are unbounded: flatten to a single line and cap the length
+// so no value can consume the output budget or inject extra lines.
+function auditText(value, maxChars) {
+  const flat = String(value ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
+}
+
+// Fixed missing-field rules. A field counts as missing only when the registry
+// carries its explicit unset marker: "unknown" for enum-like strings, null for
+// owner/revenue, and an empty list for inventory arrays. The action phrases
+// are fixed Korean instructions — never a guessed value.
+const EVIDENCE_AUDIT_FIELDS = [
+  { field: "status", missing: (p) => p.status === "unknown", action: "운영 상태를 확인해 status를 갱신" },
+  { field: "lifecycle", missing: (p) => p.lifecycle === "unknown", action: "현재 단계를 확인해 lifecycle을 갱신" },
+  { field: "businessType", missing: (p) => p.businessType === "unknown", action: "사업 유형을 분류해 businessType을 갱신" },
+  { field: "owner", missing: (p) => p.owner === null, action: "담당자를 지정해 owner를 갱신" },
+  { field: "evidenceStatus", missing: (p) => p.evidenceStatus !== "verified", action: "근거를 수집해 evidenceStatus를 갱신" },
+  { field: "repositories", missing: (p) => p.repositories.length === 0, action: "연결된 저장소가 있으면 repositories에 등록" },
+  { field: "deploys", missing: (p) => p.deploys.length === 0, action: "배포 위치가 있으면 deploys에 등록" },
+  { field: "dataStores", missing: (p) => p.dataStores.length === 0, action: "데이터 저장소가 있으면 dataStores에 등록" },
+  { field: "kpis", missing: (p) => p.kpis.length === 0, action: "핵심 지표가 있으면 kpis에 등록" },
+  { field: "revenue", missing: (p) => p.revenue === null, action: "매출이 발생했으면 revenue를 기록" },
+];
+
+const AUDIT_PRIORITY_RANK = { high: 2, medium: 1, low: 0 };
+
+// Fixed priority rule — completeness of verification decides, never inferred
+// urgency:
+//   high   — evidenceStatus is unknown/insufficient (nothing verified yet)
+//   medium — evidenceStatus partial, or verified but review asks still pending
+//   low    — verified with only inventory gaps left
+function auditPriority(project) {
+  if (project.evidenceStatus === "unknown" || project.evidenceStatus === "insufficient") return "high";
+  if (project.evidenceStatus === "partial" || project.nextEvidence.length > 0) return "medium";
+  return "low";
+}
+
+function compareAuditItems(a, b) {
+  const priority = AUDIT_PRIORITY_RANK[b.priority] - AUDIT_PRIORITY_RANK[a.priority];
+  if (priority) return priority;
+  const missing = b.missingFields.length - a.missingFields.length;
+  if (missing) return missing;
+  const pending = b.pendingEvidence - a.pendingEvidence;
+  if (pending) return pending;
+  return a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0;
+}
+
+// Builds the read-only evidence audit. Pure and deterministic: identical
+// registry input always produces identical output — no wall-clock time,
+// environment, or randomness. Items expose only the allowlisted fields;
+// raw registry JSON, evidence refs, local paths, and secret-like values are
+// never copied into the result.
+export function buildEvidenceAudit(registry) {
+  const { hyphen, excludedOrganizations } = hyphenCoreSplit(registry);
+  const coverage = registryCoverage(registry, hyphen, excludedOrganizations);
+
+  const fieldGaps = Object.fromEntries(EVIDENCE_AUDIT_FIELDS.map(({ field }) => [field, 0]));
+  let pendingEvidence = 0;
+  const byPriority = { high: 0, medium: 0, low: 0 };
+  const items = [];
+
+  for (const project of hyphen) {
+    const missing = EVIDENCE_AUDIT_FIELDS.filter(({ missing }) => missing(project));
+    const pending = project.nextEvidence.length;
+    pendingEvidence += pending;
+    for (const { field } of missing) fieldGaps[field] += 1;
+    if (missing.length === 0 && pending === 0) continue;
+
+    const priority = auditPriority(project);
+    byPriority[priority] += 1;
+    const actions = missing.map(({ action }) => action);
+    for (const ask of project.nextEvidence) {
+      actions.push(auditText(ask, AUDIT_ACTION_MAX_CHARS));
+    }
+    if (actions.length > AUDIT_MAX_ACTIONS) {
+      const overflow = actions.length - AUDIT_MAX_ACTIONS + 1;
+      actions.length = AUDIT_MAX_ACTIONS - 1;
+      actions.push(`… 외 ${overflow}건`);
+    }
+    items.push({
+      projectId: auditText(project.id, AUDIT_NAME_MAX_CHARS),
+      projectName: auditText(project.name, AUDIT_NAME_MAX_CHARS),
+      businessGroup: auditText(project.businessGroup, AUDIT_NAME_MAX_CHARS),
+      priority,
+      missingFields: missing.map(({ field }) => field),
+      actions,
+      basis: [...missing.map(({ field }) => field), ...(pending > 0 ? ["nextEvidence"] : [])],
+      pendingEvidence: pending,
+    });
+  }
+
+  items.sort(compareAuditItems);
+  return {
+    kind: EVIDENCE_AUDIT_KIND,
+    schemaVersion: 1,
+    source: {
+      updatedAt: registry.updatedAt,
+      sourceHash: registry.sourceHash,
+      scope: registry.scope,
+      consumer: registry.consumer,
+    },
+    coverage,
+    summary: {
+      projectsNeedingReview: items.length,
+      fieldGaps,
+      pendingEvidence,
+      byPriority,
+    },
+    items: items.slice(0, EVIDENCE_AUDIT_MAX_ITEMS),
+  };
 }

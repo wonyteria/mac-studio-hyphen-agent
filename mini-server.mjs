@@ -41,8 +41,10 @@ const requestTypes = new Set([
   "studio_priorities",
   "studio_blockers",
   "studio_overview",
+  "studio_evidence_audit",
 ]);
 const studioBriefingTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview"]);
+const studioAuditTypes = new Set(["studio_evidence_audit"]);
 const studioViewByType = {
   studio_priorities: "priorities",
   studio_blockers: "blockers",
@@ -417,6 +419,7 @@ const html = `<!doctype html>
                 <option value="studio_overview">전체 Studio 브리핑</option>
                 <option value="studio_priorities">전체 Studio 우선순위</option>
                 <option value="studio_blockers">전체 Studio 막힌 프로젝트</option>
+                <option value="studio_evidence_audit">사업 현황 갱신 점검</option>
                 <option value="hermes_chat">Hermes 4.3 대화</option>
                 <option value="mac_status">Mac 상태</option>
                 <option value="deployment_status">배포 상태</option>
@@ -437,8 +440,8 @@ const html = `<!doctype html>
   <script>window.__HERMES_PREFILL__ = __PREFILL_JSON__;</script>
   <script>
     const $ = (id) => document.getElementById(id);
-    const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
-    const studioScopeTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview"]);
+    const labels = { auto: "자동 판단", studio_overview: "전체 Studio 브리핑", studio_priorities: "전체 Studio 우선순위", studio_blockers: "전체 Studio 막힌 프로젝트", studio_evidence_audit: "사업 현황 갱신 점검", hermes_chat: "Hermes 4.3 대화", hermes_ops: "Hermes 운영 요청", mac_status: "Mac 상태", deployment_status: "배포 상태", project_inspect: "프로젝트 점검", redeploy: "재배포", file_cleanup: "파일 정리", development: "Codex 개발 요청", custom: "Hermes 4.3 대화" };
+    const studioScopeTypes = new Set(["studio_priorities", "studio_blockers", "studio_overview", "studio_evidence_audit"]);
     const statusLabels = { queued: "대기 중", approval_required: "승인 필요", running: "실행 중", done: "완료", failed: "실패", canceled: "취소됨" };
     const routeLabels = { NO_ACTION: "조치 불필요", LOCAL_SCRIPT: "로컬 점검", LOCAL_LLM: "로컬 모델", GPT: "외부 모델", CODEX: "Codex 개발", DEVIN: "Devin", REQUIRE_OWNER: "소유자 확인 필요" };
     const verdictLabels = { allow: "허용", warn: "주의", block: "차단" };
@@ -446,6 +449,7 @@ const html = `<!doctype html>
       { id: "briefing", label: "오늘 브리핑", body: "전체 Hyphen Studio의 오늘 브리핑을 보여줘", type: "studio_overview" },
       { id: "priorities", label: "오늘 우선순위", body: "전체 Hyphen Studio 프로젝트의 오늘 우선순위를 정리해줘", type: "studio_priorities" },
       { id: "blocked", label: "막힌 프로젝트", body: "전체 Hyphen Studio에서 지금 막힌 프로젝트를 알려줘", type: "studio_blockers" },
+      { id: "audit", label: "사업 현황 갱신 점검", body: "전체 Hyphen Studio 사업 현황에서 갱신이 필요한 항목을 점검해줘", type: "studio_evidence_audit" },
       { id: "mac", label: "Mac 상태 점검", body: "Mac 상태를 점검해줘", type: "mac_status" },
       { id: "deploy", label: "배포 상태 확인", body: "배포 상태를 확인해줘", type: "deployment_status" },
     ];
@@ -538,8 +542,9 @@ const html = `<!doctype html>
     function titleFrom(text) { return String(text || "새 요청").trim().replace(/\\s+/g, " ").slice(0, 56) || "새 요청"; }
     function assistantText(r) {
       if (studioScopeTypes.has(r.resolved_type || r.type)) {
-        return r.status === "failed"
-          ? "사업 레지스트리를 지금 읽을 수 없습니다. 잠시 후 다시 시도해주세요."
+        if (r.status === "failed") return "사업 레지스트리를 지금 읽을 수 없습니다. 잠시 후 다시 시도해주세요.";
+        return (r.resolved_type || r.type) === "studio_evidence_audit"
+          ? "전체 Hyphen Studio 사업 레지스트리의 읽기 전용 갱신 점검표를 만들었습니다."
           : "전체 Hyphen Studio 사업 레지스트리에서 읽기 전용 브리핑을 만들었습니다.";
       }
       if (r.status === "approval_required") return "변경이 필요한 작업으로 판단했습니다. 승인하기 전에는 아무것도 실행되지 않습니다.";
@@ -621,7 +626,7 @@ const html = `<!doctype html>
       if (!active) {
         $("messages").innerHTML = '<div class="empty"><h1>무엇을 도와드릴까요?</h1><p>프로젝트를 고르고 자연스럽게 요청하면 Hermes가 Mac Studio에서 안전하게 처리합니다.</p><div class="preset-grid">' +
           presets.map((preset) => '<button type="button" class="preset" data-preset="' + esc(preset.id) + '">' + esc(preset.label) + '</button>').join("") +
-          '</div><p class="preset-scope">브리핑·우선순위·막힌 프로젝트는 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
+          '</div><p class="preset-scope">브리핑·우선순위·막힌 프로젝트·갱신 점검은 전체 Hyphen Studio 기준, Mac·배포는 선택한 프로젝트 기준입니다.</p></div>';
         return;
       }
       const events = (active.events || []).slice(-6).reverse().map((event) => '<div class="event"><span>' + esc(new Date(event.at).toLocaleTimeString()) + '</span><strong>' + esc(event.message) + '</strong></div>').join("");
@@ -1039,6 +1044,108 @@ async function runStudioBriefing(request) {
   }
 }
 
+const studioAuditUnavailableMessage = "지금은 사업 현황 갱신 점검을 불러올 수 없습니다. 잠시 후 다시 시도해주세요.";
+const studioAuditTopItems = 10;
+const studioAuditFieldLabels = {
+  status: "상태",
+  lifecycle: "단계",
+  businessType: "사업 유형",
+  owner: "담당자",
+  evidenceStatus: "근거",
+  repositories: "저장소",
+  deploys: "배포",
+  dataStores: "데이터 저장소",
+  kpis: "지표",
+  revenue: "매출",
+};
+const studioAuditPriorityLabels = { high: "높음", medium: "보통", low: "낮음" };
+
+// Bounded owner-facing rendering of the evidence audit. Same rules as the
+// briefing renderer: registry-derived Korean summaries and fixed field labels
+// only — never raw JSON, evidence refs, paths, or hash material.
+function renderEvidenceAudit(audit) {
+  const lines = [
+    `사업 현황 갱신 점검 · 전체 Hyphen Studio`,
+    `소스: ${studioSourceLabel} · 업데이트 ${audit.source.updatedAt}`,
+    `범위: hyphen 코어 ${audit.coverage.hyphenCore}개 프로젝트 (제외 ${audit.coverage.excluded}개)`,
+    "",
+    `공백 집계: 상태 미상 ${audit.coverage.statusUnknown}개 · 근거 미충족 ${audit.coverage.evidenceUnverified}개 · owner 미지정 ${audit.coverage.ownerMissing}개`,
+    `갱신 검토 대상 ${audit.summary.projectsNeedingReview}개 · 대기 중인 확인 요청 ${audit.summary.pendingEvidence}건`,
+    `우선순위: 높음 ${audit.summary.byPriority.high}개 · 보통 ${audit.summary.byPriority.medium}개 · 낮음 ${audit.summary.byPriority.low}개`,
+    "",
+  ];
+  if (audit.items.length === 0) {
+    lines.push("모든 항목이 검증 완료 — 갱신이 필요한 프로젝트가 없습니다.");
+  } else {
+    lines.push(`■ 우선 갱신 작업 (상위 ${Math.min(studioAuditTopItems, audit.items.length)}개)`);
+    for (const [index, item] of audit.items.slice(0, studioAuditTopItems).entries()) {
+      const missing = item.missingFields.map((field) => studioAuditFieldLabels[field] || field).join(", ");
+      lines.push(
+        `${index + 1}. ${studioText(item.projectName, studioNameMaxChars)} — ${studioAuditPriorityLabels[item.priority] || item.priority} · 누락: ${missing}`,
+      );
+      for (const action of item.actions.slice(0, 4)) {
+        lines.push(`   - ${studioText(action, studioSummaryMaxChars)}`);
+      }
+    }
+    if (audit.items.length > studioAuditTopItems) lines.push(`… 외 ${audit.items.length - studioAuditTopItems}개`);
+  }
+  return lines.join("\n").slice(0, studioResultMaxChars);
+}
+
+// Deterministic read-only evidence audit, generated synchronously in the
+// server — never queued for the worker, never needs approval.
+async function runStudioEvidenceAudit(request) {
+  const now = Date.now();
+  const finish = (status, result, briefing = null) => {
+    request.status = status;
+    request.result = result;
+    request.briefing = briefing;
+    request.progress = status === "done" ? "읽기 전용 갱신 점검표를 만들었습니다." : "갱신 점검표를 만들지 못했습니다.";
+    request.progress_step = status;
+    request.completed_at = now;
+    request.updated_at = now;
+  };
+  try {
+    const registryLib = await loadBusinessRegistryModule();
+    if (!registryLib) {
+      finish("failed", studioAuditUnavailableMessage, { view: "evidence_audit", error: "registry_module_missing" });
+      addEvent(request, "갱신 점검 생성 실패");
+      return;
+    }
+    const { registry } = await registryLib.loadBusinessRegistry(businessRegistryFile, {
+      expectedHash: businessRegistryExpectedHash || undefined,
+    });
+    const audit = registryLib.buildEvidenceAudit(registry);
+    finish("done", renderEvidenceAudit(audit), {
+      view: "evidence_audit",
+      sourceLabel: studioSourceLabel,
+      updatedAt: audit.source.updatedAt,
+      itemCount: audit.summary.projectsNeedingReview,
+    });
+    addEvent(request, "갱신 점검표 생성");
+  } catch (error) {
+    finish("failed", studioAuditUnavailableMessage, { view: "evidence_audit", error: studioErrorCode(error) });
+    addEvent(request, "갱신 점검 생성 실패");
+  }
+}
+
+// Authenticated read-only audit payload for API consumers. Same registry
+// loading and fail-closed posture as businessRegistryStatus: on any load
+// failure the response degrades to state unavailable instead of leaking the
+// reason. The audit document itself is allowlisted by construction.
+async function businessEvidenceAudit() {
+  const registryLib = await loadBusinessRegistryModule();
+  if (!registryLib) return { state: "unavailable", audit: null };
+  try {
+    const { registry } = await registryLib.loadBusinessRegistry(businessRegistryFile, {
+      expectedHash: businessRegistryExpectedHash || undefined,
+    });
+    return { state: "ok", audit: registryLib.buildEvidenceAudit(registry) };
+  } catch {
+    return { state: "unavailable", audit: null };
+  }
+}
+
 // Read-only traffic-coverage aggregate. totalEligibleRequests counts every
 // valid stored request; observedOk/observedError count requests carrying the
 // bounded system1_shadow marker (an error marker still counts as observed).
@@ -1170,6 +1277,10 @@ createServer(async (req, res) => {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, await businessRegistryStatus());
     }
+    if (url.pathname === "/api/business/audit" && req.method === "GET") {
+      if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
+      return send(res, 200, await businessEvidenceAudit());
+    }
     if (url.pathname === "/api/requests" && req.method === "POST") {
       if (!isAdmin(req)) return send(res, 401, { error: "unauthorized" });
       const body = await readBody(req);
@@ -1212,6 +1323,8 @@ createServer(async (req, res) => {
       }
       if (studioBriefingTypes.has(type)) {
         await runStudioBriefing(request);
+      } else if (studioAuditTypes.has(type)) {
+        await runStudioEvidenceAudit(request);
       }
       await mutateStore((store) => store.requests.push(request));
       return send(res, 201, { request });
@@ -1263,6 +1376,13 @@ createServer(async (req, res) => {
           // never queued for the worker.
           addEvent(item, "브리핑 재생성");
           await runStudioBriefing(item);
+          return true;
+        }
+        if (studioAuditTypes.has(item.type)) {
+          // Evidence audits regenerate synchronously in the server too —
+          // same read-only, no-worker contract as briefings.
+          addEvent(item, "갱신 점검 재생성");
+          await runStudioEvidenceAudit(item);
           return true;
         }
         const risky = mutationTypes.has(item.resolved_type || item.type);

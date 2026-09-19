@@ -10,7 +10,7 @@
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run test:runtime && npm run build",
-    "test:runtime": "node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs tests/studio-briefing.test.mjs tests/prefill.test.mjs tests/registry-sync.test.mjs tests/business-status.test.mjs",
+    "test:runtime": "node --test tests/rendered-html.test.mjs tests/project-registry.test.mjs tests/runtime-install.test.mjs tests/business-briefing.test.mjs tests/backup-readiness.test.mjs tests/system1.test.mjs tests/system1-shadow.test.mjs tests/studio-briefing.test.mjs tests/prefill.test.mjs tests/registry-sync.test.mjs tests/business-status.test.mjs tests/evidence-audit.test.mjs",
     "eval:system1": "node scripts/hermes-system1-eval.mjs",
     "eval:system1:json": "node scripts/hermes-system1-eval.mjs --format json",
     "briefing": "node scripts/hermes-business-briefing.mjs",
